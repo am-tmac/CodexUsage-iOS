@@ -1,0 +1,9 @@
+// Safe defaults for source builds. Private.xcconfig (ignored by Git) may override them locally.
+CODEX_APP_BUNDLE_IDENTIFIER = com.example.CodexUsage
+APP_GROUP_IDENTIFIER = group.com.example.CodexUsage
+KEYCHAIN_GROUP_IDENTIFIER = com.example.CodexUsage.shared
+AppIdentifierPrefix = YOURTEAMID.
+ANTIGRAVITY_CLIENT_ID =
+ANTIGRAVITY_CLIENT_SECRET =
+
+#include? "Private.xcconfig"

@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>KeychainGroupIdentifier</key>
+	<string>$(KEYCHAIN_GROUP_IDENTIFIER)</string>
+	<key>AppGroupIdentifier</key>
+	<string>$(APP_GROUP_IDENTIFIER)</string>
+	<key>AntigravityClientID</key>
+	<string>$(ANTIGRAVITY_CLIENT_ID)</string>
+	<key>AntigravityClientSecret</key>
+	<string>$(ANTIGRAVITY_CLIENT_SECRET)</string>
+	<key>KeychainAccessGroup</key>
+	<string>$(AppIdentifierPrefix)$(KEYCHAIN_GROUP_IDENTIFIER)</string>
+	<key>NSExtension</key>
+	<dict>
+		<key>NSExtensionPointIdentifier</key>
+		<string>com.apple.widgetkit-extension</string>
+	</dict>
+</dict>
+</plist>
+

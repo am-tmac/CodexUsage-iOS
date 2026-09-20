@@ -1,0 +1,11 @@
+// Public example configuration. Copy this file to Private.xcconfig and replace every value with
+// identifiers from your own signing profile. Private.xcconfig is ignored by Git.
+CODEX_APP_BUNDLE_IDENTIFIER = com.example.CodexUsage
+APP_GROUP_IDENTIFIER = group.com.example.CodexUsage
+KEYCHAIN_GROUP_IDENTIFIER = com.example.CodexUsage.shared
+AppIdentifierPrefix = YOURTEAMID.
+// Optional. Leave blank to build without Antigravity login/refresh.
+ANTIGRAVITY_CLIENT_ID =
+ANTIGRAVITY_CLIENT_SECRET =
+CODE_SIGNING_ALLOWED = NO
+CODE_SIGNING_REQUIRED = NO

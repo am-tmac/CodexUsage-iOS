@@ -1,0 +1,36 @@
+# --- Xcode / build output ---
+.build/
+.tools/
+Build*/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+*.xcresult
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# --- 本机私有产物与日志：不入库 ---
+# Dist/ 是每次构建的未签名 IPA；Logs/ 是本机编译/测试日志与 .xcresult。
+# 需要发布产物时用 GitHub Releases 挂 IPA，而不是提交进 git 历史。
+Dist/
+Logs/
+*.xccheckout
+*.xcscmblueprint
+
+# --- 可能的密钥/签名材料，永不入库 ---
+*.p12
+*.pfx
+*.mobileprovision
+*.cer
+*.pem
+*.key
+id_rsa*
+secrets.xcconfig
+*.local.xcconfig
+Configuration/Private.xcconfig
+
+# --- macOS ---
+.DS_Store
