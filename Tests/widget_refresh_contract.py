@@ -10,14 +10,134 @@ class WidgetRefreshContract(unittest.TestCase):
         source = (ROOT / 'Widget/CodexUsageWidget.swift').read_text()
         self.assertIn('addingTimeInterval(900)', source)
         self.assertNotIn('addingTimeInterval(1800)', source)
-    def test_cache_refresh_opens_app(self):
+    def test_cache_only_control_is_present_and_never_disguised_as_refresh(self):
+        # Contract change (build 21): build 20 answered the earlier "the icon opened the App"
+        # complaint by deleting the cache-only control, so on a device without the sharing
+        # handshake the widget had NO refresh control at all. The policy is now: exactly one
+        # control, present in BOTH states, and the two states must never look alike.
         views = (ROOT / 'Shared/UsageViews.swift').read_text()
-        # One control serves every slot: an in-extension refresh when the account is authorized,
-        # otherwise a link that opens the App (cache mode never pretends to fetch).
-        self.assertIn('Link(destination: URL(string: "codexusage://refresh")!)', views)
-        self.assertIn('Button(intent: RefreshDashboardIntent(leftID: leftID, rightID: rightID))', views)
+        widget = (ROOT / 'Widget/CodexUsageWidget.swift').read_text()
+        affordance = views.split('struct RefreshAffordance: View {', 1)[1].split('\nstruct DeepSeekCompactView:', 1)[0]
+        self.assertIn('if canRefresh {', affordance)
+        self.assertIn('} else {', affordance)
+        authorized = affordance.split('if canRefresh {', 1)[1].split('} else {', 1)[0]
+        cache_only = affordance.split('} else {', 1)[1].split('#else', 1)[0]
+        glyph_def = affordance.split('var glyph: some View {', 1)[1].split('}', 1)[0]
+        open_def = affordance.split('var openAppGlyph: some View {', 1)[1].split('}', 1)[0]
+        # The two states must not share a symbol: the circular refresh glyph belongs to the
+        # AppIntent refresh only, and the open-App branch draws something visibly different.
+        self.assertIn('arrow.clockwise', glyph_def)
+        self.assertIn('arrow.up.forward.app', open_def)
+        self.assertNotIn('arrow.clockwise', open_def)
+        # Authorized: the real in-widget AppIntent refresh, drawn with the circular glyph.
+        self.assertIn('Button(intent: RefreshDashboardIntent(leftID: leftID, rightID: rightID))', authorized)
+        self.assertIn('glyph', authorized)
+        self.assertNotIn('openAppGlyph', authorized)
+        self.assertIn('.frame(width: 44, height: 44).contentShape(Rectangle())', authorized)
+        # Not authorized: an open-App control that is visibly a different glyph and label, and
+        # carries no refresh intent at all. It opens the App, where the fetch is actually allowed.
+        self.assertIn('Link(destination: Self.openAppURL)', cache_only)
+        self.assertIn('openAppGlyph', cache_only)
+        self.assertIn('accessibilityLabel("打开 App 刷新")', cache_only)
+        self.assertNotIn('RefreshDashboardIntent', cache_only)
+        # No root widgetURL: no tap can be routed around the AppIntent refresh button.
+        self.assertNotIn('.widgetURL(', widget)
+        self.assertIn('仅缓存 · 组件无刷新授权，打开 App', views)
         self.assertIn('guard DashboardStore.canRefreshAnyProvider(id) else { continue }', views)
         self.assertIn('for id in RefreshTargets.unique([leftID, rightID])', views)
+    def test_widget_refresh_authorization_is_visible_in_the_app(self):
+        # The point of the control is that the user can turn the real refresh on: the App must name
+        # the missing step and refuse the switch instead of silently failing.
+        storage = (ROOT / 'Shared/Storage.swift').read_text()
+        store = (ROOT / 'Shared/DashboardStore.swift').read_text()
+        app = (ROOT / 'App/CodexUsageApp.swift').read_text()
+        self.assertIn('static var canEnableWidgetRefreshConsent: Bool', storage)
+        self.assertIn('static var widgetConsentBlockerText: String', storage)
+        self.assertIn('static func refreshAuthorization() -> WidgetRefreshAuthorization', store)
+        self.assertIn('static func canRefreshAnyProvider', store)
+        self.assertIn('SharedStorage.cacheSharingAvailable, let group = SharedStorage.permittedGroup', store)
+        self.assertIn('row.credentialGroup == group', store)
+        self.assertIn('Toggle("允许组件独立联网刷新"', app)
+        self.assertIn('.disabled(!widgetConsentEnabled && !SharedStorage.canEnableWidgetRefreshConsent && !SharedStorage.canForceWidgetRefreshConsent)', app)
+        self.assertIn('SharedStorage.widgetConsentBlockerText', app)
+        self.assertIn('Button("开始非敏感跨进程验证")', app)
+    def test_consent_switch_can_never_dead_end_on_a_resigned_device(self):
+        # The handshake round trip needs the extension to render while the App runs, which a
+        # re-signed build may never deliver. Gating the switch on it alone leaves the user with a
+        # permanently dead switch and a cache-only widget, so an explicit acknowledged override
+        # exists — and it may only authorize a group this device really probed.
+        storage = (ROOT / 'Shared/Storage.swift').read_text()
+        app = (ROOT / 'App/CodexUsageApp.swift').read_text()
+        self.assertIn('static var canForceWidgetRefreshConsent: Bool', storage)
+        self.assertIn('func permitsForced(group: String?) -> Bool', storage)
+        self.assertIn('consent.permitsForced(group: diagnostics.selectedGroup)', storage)
+        self.assertIn('guard let group = diagnostics.selectedGroup, diagnostics.observedDefaultGroup == group', storage)
+        self.assertIn('setWidgetRefreshConsent(_ enabled: Bool, forced: Bool = false)', storage)
+        # The strict round-trip path stays first and is not weakened by the override.
+        self.assertIn('connected: (try? session.appConfirmed(read: session.read)) == true', storage)
+        self.assertIn('consent.permits(group: diagnostics.selectedGroup, handshakeID: session.id', storage)
+        # The switch is disabled only when NEITHER path can authorize a real group.
+        self.assertIn('.disabled(!widgetConsentEnabled && !SharedStorage.canEnableWidgetRefreshConsent && !SharedStorage.canForceWidgetRefreshConsent)', app)
+        self.assertIn('try SharedStorage.setWidgetRefreshConsent(true, forced: true)', app)
+        # A forced consent is disclosed in the UI, and its failure mode is stated honestly.
+        self.assertIn('consent.forced == true', app)
+        self.assertIn('刷新失败 · 保留缓存', app)
+    def test_claude_sign_in_lives_on_the_status_page_next_to_the_gpt_login(self):
+        # It is an account login, not a setting: putting it under 设置 made it look missing.
+        app = (ROOT / 'App/CodexUsageApp.swift').read_text()
+        status = app.split('var statusSections: some View {', 1)[1].split('@ViewBuilder var settingsSections', 1)[0]
+        settings = app.split('@ViewBuilder var settingsSections', 1)[1]
+        self.assertIn('loginCard', status)
+        self.assertIn('ClaudePanel(model: model, palette: palette)', status)
+        self.assertLess(status.index('loginCard'), status.index('ClaudePanel(model: model, palette: palette)'))
+        self.assertNotIn('ClaudePanel(model: model, palette: palette)', settings)
+    def test_claude_signs_in_with_oauth_and_keeps_no_session_secret(self):
+        # Contract change (build 21): the embedded cookie-scraping browser and the manual
+        # sessionKey/key path are DELETED, not hidden — no paste field, no cookie store, no
+        # key-based fetch, no allowlist of challenge hosts. The provider is a real sign-in.
+        for name in ['App/ClaudePanel.swift', 'Shared/Claude.swift', 'App/CodexUsageApp.swift',
+                     'Widget/CodexUsageWidget.swift', 'Scripts/package_widget_build21.py']:
+            text = (ROOT / name).read_text()
+            self.assertNotIn('sessionKey', text)
+            self.assertNotIn('saveCookie', text)
+            self.assertNotIn('validateCookie', text)
+        claude = (ROOT / 'Shared/Claude.swift').read_text()
+        panel = (ROOT / 'App/ClaudePanel.swift').read_text()
+        # First-party endpoints and scopes, not invented ones.
+        self.assertIn('https://claude.ai/oauth/authorize', claude)
+        self.assertIn('https://platform.claude.com/v1/oauth/token', claude)
+        self.assertIn('https://api.anthropic.com/api/oauth/usage', claude)
+        self.assertIn('9d1c250a-e61b-44d9-88ed-5944d1962f5e', claude)
+        self.assertIn('code_challenge_method', claude)
+        self.assertIn('oauth-2025-04-20', claude)
+        self.assertIn('user:profile', claude)
+        # No cookie handling and no embedded web view left anywhere.
+        self.assertNotIn('Cookie', claude)
+        self.assertNotIn('WKWebView', panel)
+        self.assertNotIn('WebKit', panel)
+        # Loopback OAuth in the existing Antigravity style: fixed registered port, in-app browser.
+        self.assertIn('http://localhost:54545/callback', claude)
+        self.assertIn('static let callbackPort: UInt16 = 54545', claude)
+        self.assertIn('127.0.0.1', panel)
+        self.assertIn('SFSafariViewController', panel)
+        self.assertIn('ASWebAuthenticationSession', panel)  # documented as unusable here
+        # Only the refresh token is persisted; the access token is never stored.
+        self.assertIn('static let service = "CodexUsage.Claude.oauth.v1"', claude)
+        self.assertIn('struct ClaudeCredential: Codable, Equatable {', claude)
+        credential = claude.split('struct ClaudeCredential: Codable, Equatable {', 1)[1].split('}', 1)[0]
+        self.assertIn('refreshToken', credential)
+        self.assertNotIn('accessToken', credential)
+        # The pre-OAuth record is deleted, and the deletion is disclosed.
+        self.assertIn('invalidateLegacyCredential', claude)
+        self.assertIn('SecItemDelete(legacy as CFDictionary)', claude)
+        # The legacy service name survives only as the delete target — never as a live query.
+        self.assertEqual(claude.count('CodexUsage.Claude.session.v1'), 1)
+        legacy = claude.split('static let legacyService', 1)[0]
+        self.assertNotIn('CodexUsage.Claude.session.v1', legacy)
+        self.assertIn('invalidateLegacyCredential()', (ROOT / 'App/CodexUsageApp.swift').read_text())
+        # The risk is stated, not glossed: no claim of compliance or stability.
+        self.assertIn('不授权第三方', panel)
+        self.assertIn('可能随时被更改或封禁', panel)
     def test_both_rows_display_actual_reset_timestamp(self):
         source = (ROOT / 'Shared/UsageViews.swift').read_text()
         self.assertIn('row("5h", window: snapshot?.usage.rateLimit?.primaryWindow)', source)
@@ -160,6 +280,21 @@ class WidgetRefreshContract(unittest.TestCase):
         self.assertIn('if hasConfiguredAccount { refreshControl }', widget)
         # Deduplicated: the same account is never refreshed twice by one tap.
         self.assertIn('public static func unique(_ ids: [String?]) -> [String]', (ROOT / 'Shared/Models.swift').read_text())
+    def test_refresh_hit_area_anchors_codex_corner_and_deepseek_bottom_right(self):
+        widget = (ROOT / 'Widget/CodexUsageWidget.swift').read_text()
+        views = (ROOT / 'Shared/UsageViews.swift').read_text()
+        # The 44pt hit region is at the outer Codex top-right corner, but at the
+        # *bottom-right* of the stacked wallet: old 38pt bottom padding placed the
+        # DeepSeek glyph halfway up the black card, not in the requested corner.
+        self.assertIn('inset: stackedCard ? 4 : 0, topInset: 0,', widget)
+        self.assertIn('bottomInset: stackedCard ? 4 : 0, bottomAligned: stackedCard)', widget)
+        self.assertIn('control.padding(.trailing, inset).padding(.bottom, bottomInset)', views)
+        self.assertIn('.frame(width: 44, height: 44).contentShape(Rectangle())', views)
+        self.assertIn('.overlay(alignment: .topTrailing)', widget)
+        # Reserve space for the wallet button so its 44pt hit target cannot cover
+        # digits even when the currency string becomes longer.
+        self.assertIn('.padding(.trailing, 48)', views)
+
     def test_theme_preference_is_shared_applied_and_not_hardcoded(self):
         models = (ROOT / 'Shared/Models.swift').read_text()
         views = (ROOT / 'Shared/UsageViews.swift').read_text()

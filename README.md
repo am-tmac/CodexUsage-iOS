@@ -32,7 +32,7 @@
 
 - 白底中文主界面，5 小时 / 1 周剩余额度、胶囊进度条、本地重置时间、手动/下拉/返回前台刷新。
 - 小号白色 Widget：Codex、5h / 7d、REMAINING 百分比、灰色重置倒计时；低额度红色，高额度绿色。无数据用 `—`，不把缺失窗口误报为 100%。
-- 组件右上角按钮由扩展内 AppIntent 直接联网刷新（`openAppWhenRun=false`，不打开 App）；点击后立即持久化「已开始」，组件重绘时显示静态「刷新中…」，完成或失败都会清除该状态；扩展被系统终止时，下一次取得账号独占锁会按「已中断」回收并保留原有节流。文字为静态标签，不伪造动画；点击后 timeline 重绘由系统调度，**不代表即时刷新**。
+- 组件右上角仅在获得共享刷新授权时显示 AppIntent 按钮，扩展内联网刷新（`openAppWhenRun=false`，不打开 App）；仅缓存状态不显示圆形按钮，而显示授权状态，需打开 App 刷新。点击后持久化「已开始」，组件重绘时显示静态「刷新中…」，完成或失败都会清除该状态；扩展被系统终止时，下一次取得账号独占锁会按「已中断」回收并保留原有节流。文字为静态标签，不伪造动画；点击后 timeline 重绘由系统调度，**不代表即时刷新**。
 - OAuth token 按账号分别放在 Keychain；共享签名获授权时使用共享组，否则使用不指定 access group 的 App 私有查询与独立 service，`AfterFirstUnlockThisDeviceOnly`；不写入 App Group 缓存，不进入日志，不云同步。App Group 仅保存额度快照及锁文件。
 - App / Widget 用同一内核文件锁保护「读取 token → 续期 → 保存轮换 token → 请求 → 写快照」，跨进程并发刷新不重复使用同一 refresh token。锁忙立即返回并保留旧数据，进程退出自动释放锁。
 - 过期前续期，401 仅尝试一次续期后重试；刷新错误保留旧快照并显示错误。超过 30 分钟或窗口已过重置点显示过期，不凭时间推测已恢复额度。
@@ -53,6 +53,12 @@
 - https://github.com/steipete/CodexBar/blob/main/Sources/CodexBarCore/Providers/Codex/CodexOAuth/CodexOAuthUsageFetcher.swift
 - https://github.com/steipete/CodexBar/blob/main/Sources/CodexBarCore/Providers/Codex/CodexOAuth/CodexTokenRefresher.swift
 - https://github.com/steipete/CodexBar/issues/439 （作者声称 iOS 设备 OAuth + 用量实机已运行；不是本工程实测证据）
+
+Claude 用量走的是 **Claude Code 自己的 OAuth 客户端**：`https://claude.ai/oauth/authorize`（PKCE S256，redirect `http://localhost:54545/callback`，scope `user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload`）、`POST https://platform.claude.com/v1/oauth/token`、`GET https://api.anthropic.com/api/oauth/usage`（带 `anthropic-beta: oauth-2025-04-20`）。这与用户本机 CLIProxyAPI 使用的机制相同；该客户端 ID 属于公开客户端，只能为使用者自己的账号签发令牌，不是新增授权范围。
+
+Anthropic 的政策不允许第三方 App 提供 Claude.ai 登录或收集、存储、转交 Claude.ai 会话令牌；个人非公开发布本身不构成授权。这些端点是非公开接口，随时可能改变或封禁，因此本 App 只读订阅用量、不代发模型请求，并在界面上如实说明。
+
+依据（2026-09-24 复现，`curl` 无凭据直连 `api.anthropic.com`）：`/api/oauth/profile` 返回 401 `Missing Authorization header. Please provide an OAuth token as a Bearer token.`，`/api/oauth/usage` 返回 429 `rate_limit_error`，而同目录下不存在的路径返回 404 `not_found_error` —— 说明这两条 OAuth 路由真实存在且要求 Bearer。授权页与 token 端点由本机 CLIProxyAPI 的管理接口 `GET /v0/management/anthropic-auth-url` 交叉确认（authorize URL、固定回调端口 54545、scope 列表逐项一致）。以上是**端点存在性**证据，**不是**本工程在你的账号上完成登录或取到用量的证据。
 
 ## 构建与测试
 
@@ -92,8 +98,20 @@ xcodebuild -project CodexUsage.xcodeproj -scheme CodexUsage \
 - 重签更换 Team/Bundle ID 可能导致旧钥匙串不可访问。此前 OAuth 已成功但保存失败的用户安装新版后需重新登录；保存失败提示明确说明授权完成、解锁/检查签名/重新登录。
 - 多账号：点「添加账号 / 重新授权」，在官方授权页退出/切换账号后授权第二个账号；不要继续使用浏览器里第一个账号的会话。App 使用明确的本机账号序号/标识，不声称未验证的邮箱身份。共享可用时点「用于组件」选择唯一的组件账号；本版不是每个 Widget 实例独立选择账号。
 - App 与 Widget 跟随系统深浅色，使用语义背景与前景色。iOS 26+ 登录/添加按钮使用原生 Liquid Glass（glassProminent），iOS 17–25 使用常规按钮和 material 回退。额度数据不覆盖玻璃，Widget 保留 Codex / 5h / 7d 的紧凑布局；没有调用不支持的 Widget 玻璃接口。没有额外外观设置开关。
-- 新包：`Dist/CodexUsage-compatible-unsigned.ipa`，含 Widget，未签名，须自行重签安装。离线模拟器测试不代表已验证购买证书下真机 OAuth/实时额度/Widget 调度；没有唤醒屏幕进行视觉验收。
+- 当前包：`Dist/CodexUsage-widget-build24-unsigned.ipa`，含 Widget，未签名，须自行重签安装；模拟器测试不能代替购买证书下的真机 OAuth、联网刷新和触摸验收。
+
+### 2.0 / build 24（DeepSeek 刷新按钮贴黑卡右下角）
+
+- 纠正 build 23 上移过多的位置：DeepSeek 小号组件的 44pt 点击区距右边/底边各 4pt，图标中心约距两边 26pt；金额行预留 48pt，避免控件盖住金额。Codex 继续贴整体右上角，刷新/未授权行为及 Claude 登录不变。
+- 静态契约 17 项、模拟器 67 项通过；设备 Release 构建成功；`swift test` 40/41，仍是旧有锁文件失败。未签名包 `Dist/CodexUsage-widget-build24-unsigned.ipa`（1,161,847 字节），SHA-256 `f22b4903dd5f4392266c9d38fe7dc038430f919ebcf9e32357012c4532c19f86`。完整证据及真机待验项见 `VERIFICATION-build24.md`。
+
+### 旧版变更摘要（已清理旧版产物）
+
+- build 23：Codex 的刷新控件移到组件整体右上角；DeepSeek 按钮曾上移过多，build 24 已修正。
+- build 22：把组件刷新授权的严格握手与经风险确认的手动授权分开；配置的 Keychain 组不代表真实 entitlement，只使用本机实测的精确组。Claude 登录移到状态页 ChatGPT 登录下方。
+- build 21：已授权时是组件内 AppIntent 真刷新；未授权时为不同外观的「打开 App」控件，不把打开 App 伪装成刷新。Claude 改为 OAuth 账号登录；删除旧的 WebKit 会话和手动 sessionKey 路径。
+- 旧版 IPA、打包脚本与验证日志均已清理。当前构建请用 `Scripts/package_widget_build24.py`，目标输出目录为 `Build24Direct`；重建前先运行静态契约、模拟器测试与 iphoneos Release 构建。详情见 `VERIFICATION-build24.md`。
 
 ## 当前版本
 
-当前源码对应 2.0 / build 17：包含 Codex、DeepSeek 与可选 Antigravity 支持、App/Widget 配额展示、账号隔离、共享容器诊断和分段额度条。历史构建记录已从公开基线移除；如需发布 IPA，请从当前源码重新构建并使用自己的签名配置。
+当前源码对应 2.0 / build 24：DeepSeek 小号刷新控件放在黑卡右下角，金额行给点击区让位；Codex 控件仍在整体右上角。沿用 build 22 的授权/未授权不同控件与 Claude OAuth（状态页 ChatGPT 登录下面）。私有标识未签名包 `Dist/CodexUsage-widget-build24-unsigned.ipa`；真机重签后的控件位置、触摸刷新和真实 Claude 登录尚待验收。详见 `VERIFICATION-build24.md`。

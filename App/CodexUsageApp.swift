@@ -12,6 +12,17 @@ import WidgetKit
     // snapshot through DashboardStore.
     @Published var antigravity: AntigravitySnapshot?
     @Published var antigravityInstalled = AntigravityStore.installed()
+    @Published var claudeInstalled = ClaudeStore.installed()
+    @Published var claudeSnapshot: ClaudeSnapshot? = ClaudeStore.snapshot()
+    init() {
+        // build 19 and earlier stored a scraped claude.ai session cookie. That path is deleted, not
+        // hidden, so the now-unusable record and its cache are removed once and the user is told.
+        if ClaudeStore.invalidateLegacyCredential() {
+            try? DashboardStore.publish()
+            WidgetCenter.shared.reloadAllTimelines()
+            message = "已删除旧版 Claude 网页会话凭据（旧的网页会话方式已彻底移除，也不再接受粘贴会话 Cookie）；请在设置里用 Claude 账号重新登录。"
+        }
+    }
     func reloadAccounts() {
         let nextDeepSeekIDs = (try? DeepSeekStore.ids()) ?? []
         let nextBalances = Dictionary(uniqueKeysWithValues: nextDeepSeekIDs.compactMap { id in DeepSeekStore.snapshot(id).map { (id, $0) } })
@@ -22,7 +33,9 @@ import WidgetKit
         let nextSelectedWidget = SharedStorage.selectedAccount()
         let nextAntigravity = AntigravityStore.snapshot()
         let nextAntigravityInstalled = AntigravityStore.installed()
-        let nextSignedIn = !nextAccounts.isEmpty || !nextDeepSeekIDs.isEmpty || nextAntigravityInstalled
+        let nextClaudeInstalled = ClaudeStore.installed()
+        let nextClaudeSnapshot = ClaudeStore.snapshot()
+        let nextSignedIn = !nextAccounts.isEmpty || !nextDeepSeekIDs.isEmpty || nextAntigravityInstalled || nextClaudeInstalled
         // ObservableObject publishes even equal assignments. Cache-only reloads should
         // not invalidate every observing view; retain the existing ownership model.
         if deepSeekIDs != nextDeepSeekIDs { deepSeekIDs = nextDeepSeekIDs }
@@ -33,6 +46,8 @@ import WidgetKit
         if selectedWidget != nextSelectedWidget { selectedWidget = nextSelectedWidget }
         if antigravity != nextAntigravity { antigravity = nextAntigravity }
         if antigravityInstalled != nextAntigravityInstalled { antigravityInstalled = nextAntigravityInstalled }
+        if claudeInstalled != nextClaudeInstalled { claudeInstalled = nextClaudeInstalled }
+        if claudeSnapshot != nextClaudeSnapshot { claudeSnapshot = nextClaudeSnapshot }
         if signedIn != nextSignedIn { signedIn = nextSignedIn }
     }
     func selectWidget(_ id: String) {
@@ -73,6 +88,11 @@ import WidgetKit
                 do { antigravity = try await AntigravityService.shared.refresh() }
                 catch is CancellationError { return }
                 catch { message = error.localizedDescription }
+            }
+            if claudeInstalled {
+                do { claudeSnapshot = try await ClaudeService.shared.refresh(widget: false) }
+                catch is CancellationError { return }
+                catch { message = (error as? ClaudeFailure)?.localizedDescription ?? "Claude 刷新失败，保留缓存" }
             }
         }
         WidgetCenter.shared.reloadAllTimelines()
@@ -273,8 +293,26 @@ struct ContentView: View {
         WidgetCenter.shared.reloadAllTimelines()
     }
     func setWidgetConsent(_ enabled: Bool) {
-        do { try SharedStorage.setWidgetRefreshConsent(enabled); model.reloadAccounts() }
-        catch { model.message = error.localizedDescription }
+        guard enabled else {
+            do { try SharedStorage.setWidgetRefreshConsent(false); model.reloadAccounts() }
+            catch { model.message = error.localizedDescription }
+            widgetConsentEnabled = SharedStorage.consent != nil
+            WidgetCenter.shared.reloadAllTimelines()
+            return
+        }
+        do { try SharedStorage.setWidgetRefreshConsent(true) }
+        catch {
+            // The App ⇄ Widget round trip could not be completed on this signing (the extension has
+            // to render while the App is running to prove it). That is evidence, not a capability,
+            // so after the user has acknowledged the risk we authorize the probed group anyway and
+            // let the first real in-widget refresh be the test. If the extension cannot read the
+            // credential the widget says so and keeps the cache; nothing is faked.
+            if SharedStorage.canForceWidgetRefreshConsent {
+                do { try SharedStorage.setWidgetRefreshConsent(true, forced: true) }
+                catch { model.message = error.localizedDescription }
+            } else { model.message = error.localizedDescription }
+        }
+        model.reloadAccounts()
         widgetConsentEnabled = SharedStorage.consent != nil
         WidgetCenter.shared.reloadAllTimelines()
     }
@@ -311,6 +349,10 @@ struct ContentView: View {
         }
         if model.antigravityInstalled {
             cards.append((cardKey("antigravity", nil), AnyView(AntigravityCard(snapshot: model.antigravity, palette: palette,
+                            onRefresh: { Task { await model.refresh() } }, busy: model.busy))))
+        }
+        if model.claudeInstalled {
+            cards.append((cardKey("claude", ClaudeStore.id), AnyView(ClaudeAccountCard(snapshot: model.claudeSnapshot, palette: palette,
                             onRefresh: { Task { await model.refresh() } }, busy: model.busy))))
         }
         let wanted = CardOrder.sorted(cards.map(\.key), by: cardOrderModel.keys)
@@ -459,6 +501,9 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity, alignment: .center)
         }
         loginCard
+        // Claude sign-in belongs next to the ChatGPT (GPT) device-code login on the status page —
+        // it is an account login, not a setting, and hiding it under 设置 made it look absent.
+        ClaudePanel(model: model, palette: palette)
         footerCard
     }
     func expandedBinding(_ id: String) -> Binding<Bool> {
@@ -498,19 +543,56 @@ struct ContentView: View {
                 Text(SharedStorage.cacheSharingAvailable ? "缓存共享模式：组件不能自行联网刷新，需打开 App 更新。令牌保持原钥匙串位置；购买证书的默认组可能与其他 App 共用，并非 App 私有安全边界。" : "App 私有模式：共享容器不可用，组件无法读取额度。请查看下方诊断。")
                     .font(.footnote).foregroundStyle(palette.secondary)
             }
-            Text("每个账号独立显示，不合并额度。账号名称取自已授权的登录身份（id_token 只读声明）与接口返回的套餐，仅用于显示、不用于鉴权；缺少身份时显示「未命名账号」，缺少套餐时省略后缀，绝不推测。小号显示所选左列，中号显示两个所选账号；默认显示遮蔽邮箱。小组件由 iOS 决定刷新时机；请求约每 15 分钟更新，不保证准时；切换负一屏没有可强制联网的公开回调。点击小组件可打开 App 刷新。未提供的额度窗口显示 —。")
+            Text("每个账号独立显示，不合并额度。账号名称取自已授权的登录身份（id_token 只读声明）与接口返回的套餐，仅用于显示、不用于鉴权；缺少身份时显示「未命名账号」，缺少套餐时省略后缀，绝不推测。小号显示所选左列，中号显示两个所选账号；默认显示遮蔽邮箱。小组件由 iOS 决定刷新时机；请求约每 15 分钟更新，不保证准时；切换负一屏没有可强制联网的公开回调。点击组件内刷新按钮仅在共享授权成功后可用；仅缓存时请打开 App 刷新。未提供的额度窗口显示 —。")
                 .font(.footnote).foregroundStyle(palette.secondary)
         }.padding(.horizontal, 4)
     }
     // MARK: - 设置
+    /// Recomputed on every render so the card shows the current authorization, not the state when
+    /// the page was first built.
+    var refreshAuthorization: WidgetRefreshAuthorization { DashboardStore.refreshAuthorization() }
     @ViewBuilder var settingsSections: some View {
         AppCard(title: "组件刷新", caption: "默认关闭，先用握手确认共享组", systemImage: "arrow.triangle.2.circlepath", palette: palette) {
             VStack(alignment: .leading, spacing: 12) {
                 Toggle("允许组件独立联网刷新", isOn: Binding(get: { widgetConsentEnabled }, set: { enabled in
                     if enabled { confirmWidgetRisk = true } else { setWidgetConsent(false) }
                 })).tint(palette.accent)
-                Text(widgetConsentEnabled ? (SharedStorage.widgetCanRefresh ? "独立刷新已启用：右上角按钮不打开 App，直接刷新所选账号。" : "已记录同意，但当前握手、钥匙串或所选账号路由不可用；组件安全退回缓存。") : "默认关闭：组件右上角打开 App 刷新。先完成下方握手，知悉共享组风险后才能开启。")
+                    // Refuse the tap only when neither path can authorize a real probed group, so
+                    // the switch never sits permanently dead with no way forward.
+                    .disabled(!widgetConsentEnabled && !SharedStorage.canEnableWidgetRefreshConsent && !SharedStorage.canForceWidgetRefreshConsent)
+                Text(widgetConsentEnabled ? (SharedStorage.widgetCanRefresh ? "独立刷新已启用：右上角按钮不打开 App，直接刷新所选账号。" : "已记录同意，但当前握手、钥匙串或所选账号路由不可用；组件安全退回缓存。") : "默认关闭：组件右上角仍有一个控制，但那是「打开 App 刷新」（箭头图标），不会假装在组件内刷新。开启并知悉共享组风险后，它才会变成真正的组件内刷新。")
                     .font(.footnote).foregroundStyle(palette.secondary)
+                if let consent = SharedStorage.consent, consent.forced == true {
+                    Text("当前是「未完成跨进程验证」的强制授权：组件会用实测组真实发起刷新。如果这次重签没有把同一个 keychain-access-groups 同时给 App 和扩展，组件会读不到凭据，那时它显示「刷新失败 · 保留缓存」，不会编造数字——遇到这种显示说明是签名权限的问题，而不是额度接口的问题。")
+                        .font(.footnote).foregroundStyle(palette.warning)
+                }
+                Text(refreshAuthorization.text)
+                    .font(.caption.monospaced()).foregroundStyle(palette.secondary).textSelection(.enabled)
+                if !widgetConsentEnabled {
+                    if SharedStorage.canEnableWidgetRefreshConsent {
+                        Text("可以开启：握手已确认，打开上面的开关并确认风险提示即可。").font(.footnote).foregroundStyle(palette.secondary)
+                    } else if SharedStorage.canForceWidgetRefreshConsent {
+                        Text("可以直接开启：本机有可用的实测 keychain 组，只是跨进程握手没走完（它要求组件在 App 运行时渲染一次并写回，组件没及时重渲染就走不完）。打开开关并确认风险后，会记录为「未完成跨进程验证」的强制授权；组件随后会真实尝试刷新，失败时保留缓存并说明原因。")
+                            .font(.footnote).foregroundStyle(palette.secondary)
+                        Button("开始非敏感跨进程验证（可选）") {
+                            do { try SharedStorage.startHandshake(); handshakeStatus = SharedStorage.handshakeText
+                                 widgetConsentEnabled = SharedStorage.consent != nil
+                                 WidgetCenter.shared.reloadAllTimelines() }
+                            catch { handshakeStatus = error.localizedDescription }
+                        }.font(.footnote)
+                    } else {
+                        Text("下一步：" + SharedStorage.widgetConsentBlockerText)
+                            .font(.footnote).foregroundStyle(palette.warning)
+                        Button("开始非敏感跨进程验证") {
+                            do { try SharedStorage.startHandshake(); handshakeStatus = SharedStorage.handshakeText
+                                 widgetConsentEnabled = SharedStorage.consent != nil
+                                 WidgetCenter.shared.reloadAllTimelines() }
+                            catch { handshakeStatus = error.localizedDescription }
+                        }.font(.footnote)
+                        Text("顺序：1) 点这里开始握手；2) 回桌面让组件渲染一次（它会读取随机挑战并写回）；3) 回到 App 点「检查握手结果」；4) 打开上面的开关。重签时 App 与扩展必须是同一张证书、同一份 profile，并且都带同一个 App Group 与 keychain-access-groups —— 缺任意一项，握手都无法完成，组件会一直停在「打开 App 刷新」。")
+                            .font(.footnote).foregroundStyle(palette.secondary)
+                    }
+                }
             }
         }
         AppCard(title: "外观", caption: "App 与小组件共用同一主题", systemImage: "circle.lefthalf.filled", palette: palette) {

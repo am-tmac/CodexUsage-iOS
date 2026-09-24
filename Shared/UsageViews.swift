@@ -50,6 +50,10 @@ struct RefreshDashboardIntent: AppIntent {
             do {
                 if DashboardStore.accounts().first(where: { $0.id == id })?.provider == "deepseek" {
                     _ = try await DeepSeekService.shared.refresh(id: id)
+                } else if DashboardStore.accounts().first(where: { $0.id == id })?.provider == "claude" {
+                    _ = try await ClaudeService.shared.refresh()
+                } else if DashboardStore.accounts().first(where: { $0.id == id })?.provider == "antigravity" {
+                    _ = try await AntigravityService.shared.refresh()
                 } else {
                     _ = try await UsageService.shared.refresh(account: id, widget: true, permission: { DashboardStore.canRefresh(id, provider: "codex") })
                 }
@@ -68,41 +72,55 @@ struct RefreshAffordance: View {
     let rightID: String?
     var palette: ThemePalette = .dark
     var label: String = "刷新组件账号"
-    /// Distance from the widget's own top-trailing corner. The default keeps the build-14
-    /// 16pt content margin; the stacked DeepSeek card paints edge to edge, so its control sits
-    /// in the black layer instead of on the widget corner.
-    var inset: CGFloat = 16
-    var topInset: CGFloat? = nil
-    /// Stacked DeepSeek card: the single control sits at the widget's bottom-trailing corner
-    /// (harmonious with the balance block, clear of the purple/white cards and the amount).
-    /// The overlay itself stays `.topTrailing`, so the one-control-per-widget contract holds.
+    /// Inset belongs to the 44pt hit region, not to the visible glyph. With zero inset the
+    /// symbol centre is already 22pt from the widget edge, aligned with the content margin.
+    var inset: CGFloat = 0
+    var topInset: CGFloat = 0
+    /// DeepSeek places the 44pt hit region 4pt from the wallet's bottom-right edge.
+    /// The amount reserves horizontal room for this region, so the glyph stays at the
+    /// actual corner instead of being lifted halfway up the black card.
+    var bottomInset: CGFloat = 0
     var bottomAligned = false
+    /// Authorised: the circular refresh glyph, on the real in-widget AppIntent refresh.
     var glyph: some View {
         Image(systemName: "arrow.clockwise").font(.system(size: 12, weight: .semibold))
             .foregroundStyle(palette.refresh)
     }
+    /// Not authorised: a deliberately different glyph. Opening the App is not an in-widget
+    /// refresh, so it must never wear the circular refresh symbol — the user reads that symbol as
+    /// "this refreshes here", and build 19 was rejected for exactly that disguise.
+    var openAppGlyph: some View {
+        Image(systemName: "arrow.up.forward.app").font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(palette.refresh)
+    }
+    /// The open-App branch is a `Link` (the only way a widget can launch its App); the widget root
+    /// carries no `widgetURL`, so no other tap is routed around the AppIntent button.
+    static let openAppURL = URL(string: "codexusage://refresh")!
     var body: some View {
         #if CODEX_WIDGET
         if canRefresh {
             placed(Button(intent: RefreshDashboardIntent(leftID: leftID, rightID: rightID)) {
                 glyph
-            }.buttonStyle(.plain).accessibilityLabel(label))
+            }.buttonStyle(.plain).frame(width: 44, height: 44).contentShape(Rectangle()).accessibilityLabel(label))
         } else {
-            placed(Link(destination: URL(string: "codexusage://refresh")!) {
-                glyph
-            }.accessibilityLabel("打开 App 刷新"))
+            // The control is present in BOTH states. Without the sharing handshake and the user's
+            // consent an extension cannot fetch, so the honest control opens the App where the
+            // fetch is allowed — under a different glyph and its own label.
+            placed(Link(destination: Self.openAppURL) {
+                openAppGlyph
+            }.frame(width: 44, height: 44).contentShape(Rectangle()).accessibilityLabel("打开 App 刷新"))
         }
         #else
-        placed(glyph)
+        if canRefresh { placed(glyph) }
         #endif
     }
     @ViewBuilder func placed<V: View>(_ control: V) -> some View {
         if bottomAligned {
             // A full-height frame inside the topTrailing overlay puts the icon at the bottom edge.
-            control.padding(.trailing, inset).padding(.bottom, inset)
+            control.padding(.trailing, inset).padding(.bottom, bottomInset)
                 .frame(maxHeight: .infinity, alignment: .bottom)
         } else {
-            control.padding(.top, topInset ?? inset).padding(.trailing, inset)
+            control.padding(.top, topInset).padding(.trailing, inset)
         }
     }
 }
@@ -132,8 +150,8 @@ struct DeepSeekCompactView: View {
                 Spacer(minLength: 0)
                 Text("打开 App 添加 Key").font(.system(size: 9)).foregroundStyle(palette.secondary)
             }
-            if failed { Text("刷新失败 · 保留缓存").font(.system(size: 9)).foregroundStyle(palette.warning) }
-            else if cacheOnly { Text("仅缓存 · 打开 App 刷新").font(.system(size: 9)).foregroundStyle(palette.secondary) }
+            if cacheOnly { Text("仅缓存 · 组件无刷新授权，打开 App").font(.system(size: 9)).foregroundStyle(palette.secondary).lineLimit(1).minimumScaleFactor(0.7) }
+            else if failed { Text("刷新失败 · 保留缓存").font(.system(size: 9)).foregroundStyle(palette.warning) }
         }
     }
 }
@@ -313,6 +331,7 @@ struct DeepSeekStackedCardView: View {
                 Text(Money.text(info?.total, currency: info?.currency))
                     .font(.system(size: 24, weight: .bold)).monospacedDigit()
                     .foregroundStyle(Color(white: 1)).lineLimit(1).minimumScaleFactor(0.45)
+                    .padding(.trailing, 48)
                 if let note = note {
                     Text(note).font(.system(size: 9)).foregroundStyle(failed ? Color.orange : Self.muted).lineLimit(1)
                 }
@@ -330,10 +349,10 @@ struct DeepSeekStackedCardView: View {
     }
     /// Only truthful status lines; the normal state adds nothing but the balance itself.
     var note: String? {
-        if snapshot == nil { return "打开 App 添加 Key" }
+        if snapshot == nil { return cacheOnly ? "无缓存 · 打开 App 添加 Key" : "打开 App 添加 Key" }
+        if cacheOnly { return "组件无刷新授权 · 打开 App" }
         if failed { return "刷新失败 · 保留上次余额" }
         if snapshot?.isStale() == true { return "保留上次余额 · 已过期" }
-        if cacheOnly { return "仅缓存 · 打开 App 刷新" }
         return nil
     }
     func band(title: String, value: String, foreground: Color, inset: CGFloat) -> some View {
@@ -420,6 +439,41 @@ struct AntigravityWidgetView: View {
     }
 }
 
+struct ClaudeCompactView: View {
+    let snapshot: ClaudeSnapshot?
+    let failed: Bool
+    let cacheOnly: Bool
+    let palette: ThemePalette
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Claude").font(.system(size: 19, weight: .bold)).foregroundStyle(palette.primary)
+            row("5h", snapshot?.fiveHour)
+            row("7d", snapshot?.sevenDay)
+            Spacer(minLength: 0)
+            HStack(spacing: 3) {
+                Text("更新")
+                if let date = snapshot?.updatedAt { Text(date, style: .time) } else { Text("—") }
+            }.font(.system(size: 9)).foregroundStyle(palette.secondary)
+            if cacheOnly { Text("仅缓存 · 组件无刷新授权，打开 App").font(.system(size: 9)).foregroundStyle(palette.secondary).lineLimit(1).minimumScaleFactor(0.7) }
+            else if failed { Text("刷新失败 · 保留缓存").font(.system(size: 9)).foregroundStyle(palette.secondary) }
+        }
+    }
+    func row(_ title: String, _ window: ClaudeWindow?) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Text(title).font(.system(size: 12, weight: .semibold))
+                Spacer(minLength: 2)
+                Text(window?.remaining.map { "\(Int($0.rounded()))%" } ?? "—")
+                    .font(.system(size: 14, weight: .bold)).monospacedDigit()
+            }.foregroundStyle(palette.primary)
+            QuotaBar(remaining: window?.remaining, palette: palette)
+            Label(ResetTimestamp.text(window?.reset), systemImage: "clock")
+                .font(.system(size: 9)).monospacedDigit().foregroundStyle(palette.secondary)
+                .lineLimit(1).minimumScaleFactor(0.75)
+        }.fixedSize(horizontal: false, vertical: true)
+    }
+}
+
 struct CompactUsageView: View {
     let snapshot: UsageSnapshot?
     var failed = false
@@ -448,8 +502,8 @@ struct CompactUsageView: View {
                 }.layoutPriority(1)
             }.font(.system(size: 9)).foregroundStyle(palette.secondary)
             if sharingUnavailable { Text("共享容器不可用 · 打开 App 诊断").font(.system(size: 9)).foregroundStyle(palette.secondary) }
+            else if cacheOnly { Text(snapshot == nil ? "无缓存 · 组件无刷新授权，打开 App" : "仅缓存 · 组件无刷新授权，打开 App").font(.system(size: 9)).foregroundStyle(palette.secondary).lineLimit(1).minimumScaleFactor(0.7) }
             else if refreshing { Text("刷新中…").font(.system(size: 9)).foregroundStyle(palette.secondary).accessibilityLabel("刷新中") }
-            else if cacheOnly { Text(snapshot == nil ? "暂无缓存 · 打开 App 刷新" : "仅缓存 · 需打开 App 刷新").font(.system(size: 9)).foregroundStyle(palette.secondary) }
             else if failed { Text("刷新失败 · 保留缓存").font(.system(size: 9)).foregroundStyle(palette.secondary) }
             else if snapshot == nil { Text("打开 App 登录").font(.system(size: 9)).foregroundStyle(palette.secondary) }
         }

@@ -13,9 +13,11 @@
 		1508BA9AE870EE5E55307F41 /* DeepSeek.swift in Sources */ = {isa = PBXBuildFile; fileRef = 929294C8CE82485447F5804A /* DeepSeek.swift */; };
 		176EEBE2096C840A89049621 /* StorageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FDB7A056A23AC51A1A48014D /* StorageTests.swift */; };
 		1A8D3F85E43626C814130CD3 /* CardOrder.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2F5263D3D4B5BF06E85260F /* CardOrder.swift */; };
+		235D7BB55D1F7FE9E346B7C0 /* Claude.swift in Sources */ = {isa = PBXBuildFile; fileRef = 93E08EC15ADD1F087EEE98F7 /* Claude.swift */; };
 		254EBF94AC088682735CEE23 /* Antigravity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33456D0E9C23C585D3E4BCBA /* Antigravity.swift */; };
 		25AA107B2BB63A819B15AD88 /* CodexUsageWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B42FBFB7A029AABBD0763F3 /* CodexUsageWidget.swift */; };
 		268094AE76A94CCA2714F804 /* AuthTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D0AEF082D7618AB0F15D084 /* AuthTests.swift */; };
+		27A420E112C76FDC74700913 /* Claude.swift in Sources */ = {isa = PBXBuildFile; fileRef = 93E08EC15ADD1F087EEE98F7 /* Claude.swift */; };
 		2A18214AD926C754D852A9AE /* AntigravityLogin.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF659305AE947F0AAD8828AC /* AntigravityLogin.swift */; };
 		321EA855C3E0C275829C17AC /* ExtraProviderPanels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99BFBB7DC77C4557E2AFEC99 /* ExtraProviderPanels.swift */; };
 		39847F36E92C3E0853204C21 /* AuthAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = F577D9F517AE9AA523A28EE2 /* AuthAPI.swift */; };
@@ -31,6 +33,7 @@
 		9EB9DCACD6E5CA8CD257C59E /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = DDE635B733CCD965A35FB792 /* Models.swift */; };
 		A746F52FFCE4E6735F174638 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 902612FF6B38D7C8C4B207A4 /* Models.swift */; };
 		B2D74EB8BD0B3A0A7E088DA4 /* DashboardStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22744EF43CFCA5066509FC3D /* DashboardStore.swift */; };
+		B6C293C1CDA342CD44EFEA21 /* ClaudePanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90CB4B875528CAC5F08F7D38 /* ClaudePanel.swift */; };
 		C12527935E17C54AFA1686C8 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C5F05FAA8AB62995F8E75D7F /* Foundation.framework */; };
 		C3E620FA54E9A07CA0081255 /* CodexUsageWidget.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 9A042239D9C1457305BA9551 /* CodexUsageWidget.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		DA32B8DB796CE80906494B42 /* CodexUsageApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC7E958362A0EF7F09A7D22A /* CodexUsageApp.swift */; };
@@ -84,7 +87,9 @@
 		69EE60B5D8B8A2384FCDA1B9 /* UsageTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = UsageTests.swift; path = Tests/UsageTests.swift; sourceTree = "<group>"; };
 		7F1435C9DE821FC5297BA349 /* CodexUsage.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CodexUsage.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		902612FF6B38D7C8C4B207A4 /* Models.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = Models.swift; path = Shared/Models.swift; sourceTree = "<group>"; };
+		90CB4B875528CAC5F08F7D38 /* ClaudePanel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ClaudePanel.swift; path = App/ClaudePanel.swift; sourceTree = "<group>"; };
 		929294C8CE82485447F5804A /* DeepSeek.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DeepSeek.swift; path = Shared/DeepSeek.swift; sourceTree = "<group>"; };
+		93E08EC15ADD1F087EEE98F7 /* Claude.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = Claude.swift; path = Shared/Claude.swift; sourceTree = "<group>"; };
 		95667A8A372765AE0F8B8BDE /* Storage.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = Storage.swift; path = Shared/Storage.swift; sourceTree = "<group>"; };
 		99BFBB7DC77C4557E2AFEC99 /* ExtraProviderPanels.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ExtraProviderPanels.swift; path = App/ExtraProviderPanels.swift; sourceTree = "<group>"; };
 		9A042239D9C1457305BA9551 /* CodexUsageWidget.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = CodexUsageWidget.appex; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -168,6 +173,8 @@
 				BF659305AE947F0AAD8828AC /* AntigravityLogin.swift */,
 				D2F5263D3D4B5BF06E85260F /* CardOrder.swift */,
 				F200229134C7A34DC672A63D /* Public.xcconfig */,
+				93E08EC15ADD1F087EEE98F7 /* Claude.swift */,
+				90CB4B875528CAC5F08F7D38 /* ClaudePanel.swift */,
 			);
 			sourceTree = "<group>";
 		};
@@ -327,6 +334,7 @@
 				25AA107B2BB63A819B15AD88 /* CodexUsageWidget.swift in Sources */,
 				254EBF94AC088682735CEE23 /* Antigravity.swift in Sources */,
 				1A8D3F85E43626C814130CD3 /* CardOrder.swift in Sources */,
+				235D7BB55D1F7FE9E346B7C0 /* Claude.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -346,6 +354,8 @@
 				321EA855C3E0C275829C17AC /* ExtraProviderPanels.swift in Sources */,
 				2A18214AD926C754D852A9AE /* AntigravityLogin.swift in Sources */,
 				6B77E310F08B55BD49ED82C7 /* CardOrder.swift in Sources */,
+				27A420E112C76FDC74700913 /* Claude.swift in Sources */,
+				B6C293C1CDA342CD44EFEA21 /* ClaudePanel.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -378,7 +388,7 @@
 				CODEX_APP_BUNDLE_IDENTIFIER = com.personal.CodexUsage;
 				CODE_SIGN_ENTITLEMENTS = Configuration/Shared.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 17;
+				CURRENT_PROJECT_VERSION = 24;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = App/Info.plist;
@@ -411,7 +421,7 @@
 				CLANG_ENABLE_OBJC_WEAK = NO;
 				CODEX_APP_BUNDLE_IDENTIFIER = com.personal.CodexUsage;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 17;
+				CURRENT_PROJECT_VERSION = 24;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -441,7 +451,7 @@
 				CODEX_APP_BUNDLE_IDENTIFIER = com.personal.CodexUsage;
 				CODE_SIGN_ENTITLEMENTS = Configuration/Shared.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 17;
+				CURRENT_PROJECT_VERSION = 24;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = App/Info.plist;
@@ -473,7 +483,7 @@
 				CLANG_ENABLE_OBJC_WEAK = NO;
 				CODEX_APP_BUNDLE_IDENTIFIER = com.personal.CodexUsage;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 17;
+				CURRENT_PROJECT_VERSION = 24;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -502,7 +512,7 @@
 				CODEX_APP_BUNDLE_IDENTIFIER = com.personal.CodexUsage;
 				CODE_SIGN_ENTITLEMENTS = Configuration/Shared.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 17;
+				CURRENT_PROJECT_VERSION = 24;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Widget/Info.plist;
@@ -596,7 +606,7 @@
 				CODEX_APP_BUNDLE_IDENTIFIER = com.personal.CodexUsage;
 				CODE_SIGN_ENTITLEMENTS = Configuration/Shared.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 17;
+				CURRENT_PROJECT_VERSION = 24;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Widget/Info.plist;

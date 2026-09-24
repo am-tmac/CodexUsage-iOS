@@ -20,7 +20,7 @@ struct DashboardQuery: EntityQuery {
 }
 struct DashboardConfiguration: WidgetConfigurationIntent {
     static var title: LocalizedStringResource = "服务与独立账号"
-    static var description = IntentDescription("小号显示左栏；中号显示两栏。每栏独立选择 Codex 或 DeepSeek 账号。")
+    static var description = IntentDescription("小号显示左栏；中号显示两栏。每栏独立选择 Codex、Claude 或其他服务。")
     @Parameter(title: "左栏 / 小号账号") var leftAccount: DashboardEntity?
     @Parameter(title: "右栏账号") var rightAccount: DashboardEntity?
 }
@@ -31,6 +31,7 @@ struct DashboardColumn {
     let usage: UsageSnapshot?
     let balance: DeepSeekSnapshot?
     let antigravity: AntigravitySnapshot?
+    let claude: ClaudeSnapshot?
     let canRefresh: Bool
     let failed: Bool
     let refreshing: Bool
@@ -42,6 +43,7 @@ struct DashboardColumn {
                     usage: id.flatMap { SharedStorage.snapshot(account: $0) },
                     balance: id.flatMap { DeepSeekStore.snapshot($0) },
                     antigravity: id.flatMap { _ in AntigravityStore.snapshot() },
+                    claude: provider == "claude" ? ClaudeStore.snapshot() : nil,
                     canRefresh: id.map { DashboardStore.canRefreshAnyProvider($0) } ?? false,
                     failed: attempt?.failed ?? false, refreshing: attempt?.isRefreshing(at: Date()) ?? false)
     }
@@ -75,6 +77,7 @@ struct UsageProvider: AppIntentTimelineProvider {
             do {
                 if column.provider == "deepseek" { _ = try await DeepSeekService.shared.refresh(id: id) }
                 else if column.provider == "antigravity" { _ = try await AntigravityService.shared.refresh() }
+                else if column.provider == "claude" { _ = try await ClaudeService.shared.refresh() }
                 else { _ = try await UsageService.shared.refresh(account: id, widget: true, permission: { DashboardStore.canRefresh(id, provider: "codex") }) }
             } catch is CancellationError {
                 return Timeline(entries: [entry(configuration)], policy: .after(Date().addingTimeInterval(900)))
@@ -98,6 +101,8 @@ struct DashboardWidgetView: View {
             }
         } else if value.provider == "antigravity" {
             AntigravityWidgetView(snapshot: value.antigravity, palette: palette)
+        } else if value.provider == "claude" {
+            ClaudeCompactView(snapshot: value.claude, failed: value.failed, cacheOnly: !value.canRefresh, palette: palette)
         } else {
             CompactUsageView(snapshot: value.usage, failed: value.failed, refreshing: value.refreshing,
                              sharingUnavailable: !SharedStorage.cacheSharingAvailable, cacheOnly: !value.canRefresh,
@@ -117,8 +122,8 @@ struct DashboardWidgetView: View {
         RefreshAffordance(canRefresh: isMedium ? (entry.left.canRefresh || entry.right.canRefresh) : entry.left.canRefresh,
                           leftID: entry.left.id, rightID: isMedium ? entry.right.id : nil,
                           palette: palette, label: isMedium ? "刷新组件内的账号" : "刷新该账号",
-                          inset: stackedCard ? 12 : 16, topInset: stackedCard ? 6 : 16,
-                          bottomAligned: stackedCard)
+                          inset: stackedCard ? 4 : 0, topInset: 0,
+                          bottomInset: stackedCard ? 4 : 0, bottomAligned: stackedCard)
     }
     var body: some View {
         Group {
@@ -159,7 +164,6 @@ struct DashboardWidgetRoot: View {
         DashboardWidgetView(entry: entry)
             .environment(\.colorScheme, entry.theme == .light ? .light : (entry.theme == .dark ? .dark : scheme))
             .containerBackground(palette.background, for: .widget)
-            .widgetURL(URL(string: "codexusage://refresh"))
     }
 }
 @main struct CodexUsageWidget: Widget {

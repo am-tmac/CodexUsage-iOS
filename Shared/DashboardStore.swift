@@ -12,6 +12,7 @@ struct DashboardAccount: Codable, Equatable, Identifiable {
         switch provider {
         case "deepseek": name = "DeepSeek"
         case "antigravity": name = "Antigravity"
+        case "claude": name = "Claude"
         default: name = "Codex"
         }
         return "\(name) · 账号 \(ordinal)"
@@ -37,6 +38,10 @@ enum DashboardStore {
             rows.append(DashboardAccount(id: AntigravityStore.account, provider: "antigravity", ordinal: 1,
                                          credentialGroup: SharedStorage.permittedGroup))
         }
+        if ClaudeStore.installed() {
+            rows.append(DashboardAccount(id: ClaudeStore.id, provider: "claude", ordinal: 1,
+                                         credentialGroup: ClaudeStore.credentialGroup()))
+        }
         try JSONEncoder().encode(rows).write(to: catalogURL(), options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
     }
     /// Provider-agnostic variant used by the single widget refresh control, which must decide
@@ -50,6 +55,40 @@ enum DashboardStore {
         guard SharedStorage.cacheSharingAvailable, let group = SharedStorage.permittedGroup,
               let row = accounts().first(where: { $0.id == id && $0.provider == provider }) else { return false }
         return row.credentialGroup == group
+    }
+    /// Why the widget's single control is in which state, per account — the pieces the App has to
+    /// show so the missing step is discoverable instead of the control just looking absent.
+    /// Nonsecret: opaque local ids and group strings only, never a token.
+    static func refreshAuthorization() -> WidgetRefreshAuthorization {
+        let rows = accounts()
+        let group = SharedStorage.permittedGroup
+        let refreshable = group.map { value in rows.filter { $0.credentialGroup == value }.map(\.id) } ?? []
+        return WidgetRefreshAuthorization(containerAvailable: SharedStorage.cacheSharingAvailable,
+                                          handshakeConfirmed: SharedStorage.canEnableWidgetRefreshConsent,
+                                          authorizedGroup: group,
+                                          refreshableIDs: refreshable,
+                                          rows: rows.map { ($0.id, $0.title, refreshable.contains($0.id)) })
+    }
+}
+
+/// Nonsecret summary of the widget-refresh authorization, rendered in the App's 组件刷新 card.
+struct WidgetRefreshAuthorization {
+    let containerAvailable: Bool
+    let handshakeConfirmed: Bool
+    let authorizedGroup: String?
+    let refreshableIDs: [String]
+    let rows: [(id: String, title: String, refreshable: Bool)]
+    var refreshableCount: Int { refreshableIDs.count }
+    var text: String {
+        let accounts = rows.isEmpty ? "（还没有账号）"
+            : rows.map { "\($0.title)：\($0.refreshable ? "组件可独立刷新" : "仅缓存 · 组件显示「打开 App 刷新」")" }.joined(separator: "\n")
+        return """
+        共享容器：\(containerAvailable ? "可用" : "不可用（App 私有模式）")
+        跨进程握手：\(handshakeConfirmed ? "已确认" : "未确认")
+        已授权 access-group：\(authorizedGroup ?? "无")
+        可独立刷新的账号：\(refreshableCount)/\(rows.count)
+        \(accounts)
+        """
     }
 }
 enum DeepSeekStore {

@@ -36,24 +36,65 @@ public enum SharedStorage {
         return try? JSONDecoder().decode(WidgetRefreshConsent.self, from: data)
     }
     static var permittedGroup: String? {
-        guard let consent, let session = handshake(),
-              consent.permits(group: diagnostics.selectedGroup, handshakeID: session.id,
-                              connected: (try? session.appConfirmed(read: session.read)) == true),
-              diagnostics.observedDefaultGroup == consent.group else { return nil }
-        return consent.group
+        guard let consent else { return nil }
+        // Strict path: consent plus a live session whose non-secret challenge actually travelled
+        // App → Widget → App, and the group the App writes credentials into is the consented one.
+        if let session = handshake(),
+           consent.permits(group: diagnostics.selectedGroup, handshakeID: session.id,
+                           connected: (try? session.appConfirmed(read: session.read)) == true),
+           diagnostics.observedDefaultGroup == consent.group {
+            return consent.group
+        }
+        // Acknowledged override (`forced`): the user accepted that in-widget refresh may still fail
+        // if this re-signing does not give both bundles the same keychain group. It still requires a
+        // group this device could really probe — the capability test then happens live, in the
+        // widget, and a failure keeps the cache and says so instead of inventing numbers.
+        if consent.permitsForced(group: diagnostics.selectedGroup) { return consent.group }
+        return nil
     }
-    static func setWidgetRefreshConsent(_ enabled: Bool) throws {
+    static func setWidgetRefreshConsent(_ enabled: Bool, forced: Bool = false) throws {
         guard !isWidget, let url = consentURL else { throw ServiceError.storage("共享容器不可用") }
         if enabled {
-            guard let session = handshake(), diagnostics.observedDefaultGroup == session.group,
-                  try session.appConfirmed(read: session.read) else { throw ServiceError.storage("请先完成当前同组 App / Widget 跨进程握手") }
-            let value = WidgetRefreshConsent(group: session.group, handshakeID: session.id)
+            let value: WidgetRefreshConsent
+            if forced {
+                guard let group = diagnostics.selectedGroup, diagnostics.observedDefaultGroup == group
+                else { throw ServiceError.storage("本机钥匙串精确组探针未成功：组件无法确定该用哪个 access-group，独立刷新无法开启。请在下方诊断查看 OSStatus（-34018 表示缺少 entitlement）。") }
+                value = WidgetRefreshConsent(group: group, handshakeID: handshake()?.id ?? "", forced: true)
+            } else {
+                guard let session = handshake(), diagnostics.observedDefaultGroup == session.group,
+                      try session.appConfirmed(read: session.read) else { throw ServiceError.storage("请先完成当前同组 App / Widget 跨进程握手") }
+                value = WidgetRefreshConsent(group: session.group, handshakeID: session.id, forced: false)
+            }
             try JSONEncoder().encode(value).write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
         } else if FileManager.default.fileExists(atPath: url.path) {
             // Revoke permission only; never delete credentials used by the App.
             try FileManager.default.removeItem(at: url)
         }
         try publishWidgetSelection()
+    }
+    /// The same conditions the setter enforces, exposed so the settings row can name the missing
+    /// step and disable the switch instead of accepting a tap that then fails silently.
+    static var canEnableWidgetRefreshConsent: Bool {
+        guard !isWidget, let session = handshake(),
+              diagnostics.observedDefaultGroup == session.group else { return false }
+        return (try? session.appConfirmed(read: session.read)) == true
+    }
+    /// True when the switch may still be turned on without the cross-process round trip: the device
+    /// has one real, probeable keychain group, so the extension can at least be pointed at the right
+    /// credential. The handshake round trip is evidence, not a capability, and on a re-signed build
+    /// it can be impossible to complete — gating the switch on it leaves the user with no path.
+    static var canForceWidgetRefreshConsent: Bool {
+        guard !isWidget, cacheSharingAvailable, let group = diagnostics.selectedGroup else { return false }
+        return diagnostics.observedDefaultGroup == group
+    }
+    /// One sentence naming exactly what has to happen next on the device.
+    static var widgetConsentBlockerText: String {
+        if isWidget { return "仅 App 可开启组件独立刷新" }
+        if !cacheSharingAvailable { return "共享容器不可用（App 私有模式）：组件连缓存都读不到，也无法申请独立刷新。请先确认重签时 App 与扩展都带有同一个 App Group。" }
+        if diagnostics.selectedGroup == nil { return "本机钥匙串精确组探针未成功：组件无法用同一 access-group 读取凭据，独立刷新无法开启。请在下方诊断查看 OSStatus（-34018 表示缺少 entitlement）。" }
+        guard let session = handshake() else { return "还没有 24 小时内的跨进程握手。先点「开始非敏感跨进程验证」，把组件放到桌面让它渲染一次，再回到 App 点「检查握手结果」。" }
+        if diagnostics.observedDefaultGroup != session.group { return "实测默认组与握手组不一致，请重新握手。" }
+        return (try? session.appConfirmed(read: session.read)) == true ? "" : "等待组件写回随机挑战（握手没走完）。可以直接开启：那会记录为「未完成跨进程验证」的强制授权，组件会真实尝试刷新，读不到凭据时会显示刷新失败并保留缓存。"
     }
     // Display-only identity policy. Stored in the shared container because BOTH the
     // App and the extension write snapshots and must mask identically. Default (no
@@ -354,8 +395,16 @@ struct StorageDiagnostics: Codable {
 struct WidgetRefreshConsent: Codable {
     let group: String
     let handshakeID: String
+    /// True when the user accepted the shared-group risk without the App ⇄ Widget round trip
+    /// completing. Optional so consent files written before the override existed still decode.
+    var forced: Bool? = nil
     func permits(group: String?, handshakeID: String?, connected: Bool) -> Bool {
         connected && group == self.group && handshakeID == self.handshakeID
+    }
+    /// The acknowledged override: no round trip required, but the group must still be one this
+    /// device could actually probe, so the extension is pointed at a real credential group.
+    func permitsForced(group: String?) -> Bool {
+        (forced ?? false) && group != nil && group == self.group
     }
 }
 struct WidgetCacheState: Codable {

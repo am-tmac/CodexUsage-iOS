@@ -433,7 +433,7 @@ final class StorageTests: XCTestCase {
         // Default must be masked, even before any switch file has ever been written.
         XCTAssertFalse(SharedStorage.showFullAccountInWidget)
         XCTAssertEqual(SharedStorage.snapshotLabel(email: identity, plan: "plus"), "ale***@example.com · Plus")
-        let masked = UsageSnapshot(usage: UsageResponse(planType: "plus", rateLimit: nil), updatedAt: Date(timeIntervalSince1970: 1),
+        let masked = UsageSnapshot(usage: UsageResponse(planType: "plus", rateLimit: nil, credits: nil, rateLimitResetCredits: nil), updatedAt: Date(timeIntervalSince1970: 1),
                                    accountLabel: SharedStorage.snapshotLabel(email: identity, plan: "plus", showFull: false))
         let url = try SharedStorage.snapshotURL(account)
         try JSONEncoder().encode(masked).write(to: url, options: .atomic)
@@ -445,7 +445,7 @@ final class StorageTests: XCTestCase {
         do {
             try SharedStorage.setShowFullAccountInWidget(true)
             XCTAssertTrue(SharedStorage.showFullAccountInWidget)
-            let full = UsageSnapshot(usage: UsageResponse(planType: "plus", rateLimit: nil), updatedAt: Date(timeIntervalSince1970: 1),
+            let full = UsageSnapshot(usage: UsageResponse(planType: "plus", rateLimit: nil, credits: nil, rateLimitResetCredits: nil), updatedAt: Date(timeIntervalSince1970: 1),
                                      accountLabel: SharedStorage.snapshotLabel(email: identity, plan: "plus"))
             try JSONEncoder().encode(full).write(to: url, options: .atomic)
             XCTAssertTrue(String(decoding: try Data(contentsOf: url), as: UTF8.self).contains(identity))
@@ -579,7 +579,7 @@ final class StorageTests: XCTestCase {
         try writeLegacyRecord(accessToken: try jwt(["exp": 4_000_000_000, "https://api.openai.com/profile": ["email": "alex@example.com"]]), account: account)
         // An old snapshot already written with the placeholder label.
         let url = try SharedStorage.snapshotURL(account)
-        let stale = UsageSnapshot(usage: UsageResponse(planType: "plus", rateLimit: nil), updatedAt: Date(timeIntervalSince1970: 1), accountLabel: AccountLabel.unknownIdentity)
+        let stale = UsageSnapshot(usage: UsageResponse(planType: "plus", rateLimit: nil, credits: nil, rateLimitResetCredits: nil), updatedAt: Date(timeIntervalSince1970: 1), accountLabel: AccountLabel.unknownIdentity)
         try JSONEncoder().encode(stale).write(to: url, options: .atomic)
         XCTAssertTrue(String(decoding: try Data(contentsOf: url), as: UTF8.self).contains(AccountLabel.unknownIdentity))
         // Loading the credential recovers and persists the identity, then re-labels the stored snapshot.
@@ -596,7 +596,7 @@ final class StorageTests: XCTestCase {
         try writeLegacyRecord(accessToken: try jwt(["exp": 4_000_000_000, "https://api.openai.com/profile": ["email": "alex@example.com"]]), account: account)
         XCTAssertFalse(SharedStorage.showFullAccountInWidget)
         let identity = try XCTUnwrap(SharedStorage.accountEmail(account))
-        let snapshot = UsageSnapshot(usage: UsageResponse(planType: "plus", rateLimit: nil), updatedAt: Date(timeIntervalSince1970: 1),
+        let snapshot = UsageSnapshot(usage: UsageResponse(planType: "plus", rateLimit: nil, credits: nil, rateLimitResetCredits: nil), updatedAt: Date(timeIntervalSince1970: 1),
                                      accountLabel: SharedStorage.snapshotLabel(email: identity, plan: "plus"))
         let url = try SharedStorage.snapshotURL(account)
         try JSONEncoder().encode(snapshot).write(to: url, options: .atomic)
