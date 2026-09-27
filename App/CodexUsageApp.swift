@@ -4,6 +4,9 @@ import WidgetKit
 @MainActor final class UsageModel: ObservableObject {
     @Published var deepSeekIDs = (try? DeepSeekStore.ids()) ?? []
     @Published var balances: [String: DeepSeekSnapshot] = [:]
+    /// DeepSeek accounts whose last refresh failed (from the persisted attempt record), loaded with
+    /// the balances so no view reads the file while rendering.
+    @Published var deepSeekFailed: Set<String> = []
     @Published var accounts = (try? SharedStorage.accountIDs()) ?? []
     @Published var snapshots: [String: UsageSnapshot] = [:]
     @Published var emails: [String: String] = [:]
@@ -26,6 +29,7 @@ import WidgetKit
     func reloadAccounts() {
         let nextDeepSeekIDs = (try? DeepSeekStore.ids()) ?? []
         let nextBalances = Dictionary(uniqueKeysWithValues: nextDeepSeekIDs.compactMap { id in DeepSeekStore.snapshot(id).map { (id, $0) } })
+        let nextDeepSeekFailed = Set(nextDeepSeekIDs.filter { WidgetRefreshAttempt.load($0).failed })
         try? DashboardStore.publish()
         let nextAccounts = (try? SharedStorage.accountIDs()) ?? []
         let nextSnapshots = Dictionary(uniqueKeysWithValues: nextAccounts.compactMap { id in SharedStorage.snapshot(account: id).map { (id, $0) } })
@@ -40,6 +44,7 @@ import WidgetKit
         // not invalidate every observing view; retain the existing ownership model.
         if deepSeekIDs != nextDeepSeekIDs { deepSeekIDs = nextDeepSeekIDs }
         if balances != nextBalances { balances = nextBalances }
+        if deepSeekFailed != nextDeepSeekFailed { deepSeekFailed = nextDeepSeekFailed }
         if accounts != nextAccounts { accounts = nextAccounts }
         if snapshots != nextSnapshots { snapshots = nextSnapshots }
         if emails != nextEmails { emails = nextEmails }
@@ -96,6 +101,16 @@ import WidgetKit
             }
         }
         WidgetCenter.shared.reloadAllTimelines()
+    }
+    /// Refreshes one DeepSeek account (the 设置 panel's per-account button). Shares `busy` with the
+    /// full refresh, so the two can never race on the same key.
+    func refreshDeepSeek(_ id: String) async -> Error? {
+        guard !busy else { return nil }
+        busy = true
+        defer { busy = false; reloadAccounts(); WidgetCenter.shared.reloadAllTimelines() }
+        do { balances[id] = try await DeepSeekService.shared.refresh(id: id, widget: false); return nil }
+        catch is CancellationError { return nil }
+        catch { return error }
     }
     func login() {
         cancelLogin()
@@ -204,9 +219,9 @@ struct AppCard<Content: View>: View {
                         }
                     }
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(title).font(.system(size: 20, weight: .bold)).foregroundStyle(palette.primary).lineLimit(1)
+                    Text(title).scaledFont(20, weight: .bold, relativeTo: .title3).foregroundStyle(palette.primary).lineLimit(1)
                     if let caption {
-                        Text(caption).font(.system(size: 12)).foregroundStyle(palette.secondary)
+                        Text(caption).scaledFont(12, relativeTo: .caption).foregroundStyle(palette.secondary)
                             .lineLimit(1).truncationMode(.middle)
                     }
                 }
@@ -260,8 +275,54 @@ struct AppRow: View {
             Spacer(minLength: 12)
             Text(value).foregroundStyle(palette.primary).multilineTextAlignment(.trailing)
         }
-        .font(.system(size: 15))
+        .scaledFont(15, relativeTo: .subheadline)
         .padding(.vertical, 5)
+    }
+}
+
+/// A fixed-size system font that still follows Dynamic Type: at the default text size it is exactly
+/// `.system(size:weight:)` (build14's look), and it grows with the user's text-size setting.
+private struct ScaledSystemFont: ViewModifier {
+    @ScaledMetric private var size: CGFloat
+    let weight: Font.Weight
+    init(size: CGFloat, weight: Font.Weight, relativeTo style: Font.TextStyle) {
+        _size = ScaledMetric(wrappedValue: size, relativeTo: style)
+        self.weight = weight
+    }
+    func body(content: Content) -> some View { content.font(.system(size: size, weight: weight)) }
+}
+extension View {
+    func scaledFont(_ size: CGFloat, weight: Font.Weight = .regular, relativeTo style: Font.TextStyle) -> some View {
+        modifier(ScaledSystemFont(size: size, weight: weight, relativeTo: style))
+    }
+}
+
+/// Everything the App shows about widget sharing, read in one pass off the main actor. Each field is
+/// the same `SharedStorage` / `DashboardStore` value the views used to compute inline on every
+/// render; defaults are the "not loaded yet" state (switch disabled, no warning flashed).
+struct WidgetAuthState: Sendable {
+    var sharingAvailable = true
+    var consentRecorded = false
+    var forcedConsent = false
+    var canEnableConsent = false
+    var canForceConsent = false
+    var widgetCanRefresh = false
+    var blockerText = ""
+    var authorizationText = ""
+    var widgetDiagnostics = ""
+    var handshakeText = ""
+    static func load() -> WidgetAuthState {
+        let consent = SharedStorage.consent
+        return WidgetAuthState(sharingAvailable: SharedStorage.sharingAvailable,
+                               consentRecorded: consent != nil,
+                               forcedConsent: consent?.forced == true,
+                               canEnableConsent: SharedStorage.canEnableWidgetRefreshConsent,
+                               canForceConsent: SharedStorage.canForceWidgetRefreshConsent,
+                               widgetCanRefresh: SharedStorage.widgetCanRefresh,
+                               blockerText: SharedStorage.widgetConsentBlockerText,
+                               authorizationText: DashboardStore.refreshAuthorization().text,
+                               widgetDiagnostics: SharedStorage.widgetDiagnosticText,
+                               handshakeText: SharedStorage.handshakeText)
     }
 }
 
@@ -278,10 +339,13 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var scheme
     @State private var tab: AppTab = .status
     @State private var expanded: Set<String> = []
-    @State private var handshakeStatus = SharedStorage.handshakeText
+    @State private var handshakeStatus = ""
+    /// Keychain/file-backed sharing state, loaded in `.task` and after each action instead of on
+    /// every render (the 设置 body used to hit the keychain several times per redraw).
+    @State private var auth = WidgetAuthState()
     @State private var confirmKeychainRisk = false
     @State private var confirmWidgetRisk = false
-    @State private var widgetConsentEnabled = SharedStorage.consent != nil
+    @State private var widgetConsentEnabled = false
     @State private var showFullInWidget = SharedStorage.showFullAccountInWidget
     @State private var theme = ThemePreference.load()
     @StateObject private var cardOrderModel = CardOrderModel(keys: CardOrder.load())
@@ -292,12 +356,21 @@ struct ContentView: View {
         theme = ThemePreference.load()
         WidgetCenter.shared.reloadAllTimelines()
     }
+    /// Re-reads the sharing state off the main actor. Called on launch, on foreground and after
+    /// every action that can change consent, handshake or accounts.
+    func reloadAuth() async {
+        let next = await Task.detached(priority: .userInitiated) { WidgetAuthState.load() }.value
+        auth = next
+        widgetConsentEnabled = next.consentRecorded
+        if handshakeStatus.isEmpty { handshakeStatus = next.handshakeText }
+    }
     func setWidgetConsent(_ enabled: Bool) {
         guard enabled else {
             do { try SharedStorage.setWidgetRefreshConsent(false); model.reloadAccounts() }
             catch { model.message = error.localizedDescription }
             widgetConsentEnabled = SharedStorage.consent != nil
             WidgetCenter.shared.reloadAllTimelines()
+            Task { await reloadAuth() }
             return
         }
         do { try SharedStorage.setWidgetRefreshConsent(true) }
@@ -315,6 +388,7 @@ struct ContentView: View {
         model.reloadAccounts()
         widgetConsentEnabled = SharedStorage.consent != nil
         WidgetCenter.shared.reloadAllTimelines()
+        Task { await reloadAuth() }
     }
     func setFullInWidget(_ enabled: Bool) {
         do { try SharedStorage.setShowFullAccountInWidget(enabled); SharedStorage.relabelSnapshots(); model.reloadAccounts() }
@@ -405,10 +479,18 @@ struct ContentView: View {
         .refreshable { if model.signedIn { await model.refresh() } }
         .task {
             model.reloadAccounts()
+            await reloadAuth()
             if model.signedIn { await model.refresh() }
         }
         .onOpenURL { url in if url.scheme == "codexusage" && model.signedIn { Task { await model.refresh() } } }
-        .onChange(of: scenePhase) { _, phase in if phase == .active && model.signedIn && !model.signingIn { Task { await model.refresh() } } }
+        .onChange(of: scenePhase) { _, phase in
+            guard phase == .active else { return }
+            Task { await reloadAuth() }
+            if model.signedIn && !model.signingIn { Task { await model.refresh() } }
+        }
+        // Accounts added or removed change which rows the widget may refresh.
+        .onChange(of: model.accounts) { _, _ in Task { await reloadAuth() } }
+        .onChange(of: model.deepSeekIDs) { _, _ in Task { await reloadAuth() } }
     }
     /// One tab page: the shared title bar plus the scrolling section stack. The system tab bar
     /// supplies its own bottom inset, so the content only needs a small tail pad.
@@ -443,14 +525,14 @@ struct ContentView: View {
     /// Centred App title (this project's own name) with the one meaningful trailing control.
     var navigationBar: some View {
         ZStack {
-            Text("Codex 用量").font(.system(size: 17, weight: .semibold)).foregroundStyle(palette.primary)
+            Text("Codex 用量").scaledFont(17, weight: .semibold, relativeTo: .headline).foregroundStyle(palette.primary)
             HStack {
                 Spacer()
                 if tab == .status {
                     Button(editMode == .active ? "完成" : "排序") {
                         withAnimation { editMode = editMode == .active ? .inactive : .active }
                     }
-                    .font(.system(size: 15, weight: .semibold)).foregroundStyle(palette.primary)
+                    .scaledFont(15, weight: .semibold, relativeTo: .subheadline).foregroundStyle(palette.primary)
                     .padding(.trailing, 4)
                 }
                 Button { Task { await model.refresh() } } label: {
@@ -486,18 +568,26 @@ struct ContentView: View {
             guard let from = source.first else { return }
             cardOrderModel.set(CardOrder.move(from, to: destination, in: orderedCards.map(\.key)))
         }
-        if model.accounts.isEmpty && model.deepSeekIDs.isEmpty && !model.antigravityInstalled {
+        // The status page is a List, so the ScrollView-only error line in `page` never reached it:
+        // a failed refresh here used to look like nothing happened. Same text style as 设置.
+        if let message = model.message {
+            Text(message).font(.callout).foregroundStyle(palette.danger).accessibilityIdentifier("statusErrorMessage")
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+                .listRowInsets(EdgeInsets(top: 6, leading: 20, bottom: 6, trailing: 20))
+        }
+        if model.accounts.isEmpty && model.deepSeekIDs.isEmpty && !model.antigravityInstalled && !model.claudeInstalled {
             VStack(alignment: .leading, spacing: 14) {
-                Image(systemName: "chart.bar.xaxis").font(.system(size: 42)).foregroundStyle(palette.primary).padding(.top, 24)
+                Image(systemName: "chart.bar.xaxis").scaledFont(42, relativeTo: .largeTitle).foregroundStyle(palette.primary).padding(.top, 24)
                 Text("在 iPhone 上直接查看额度").font(.title2.bold()).foregroundStyle(palette.primary)
                 Text("使用 ChatGPT 设备代码登录，无需 Mac 或代理服务。令牌仅存储在本机钥匙串。此 App 非 OpenAI 官方产品，使用非公开接口，可能随时失效。")
                     .foregroundStyle(palette.secondary)
             }.padding(.vertical, 4)
         }
-        Text("如何添加小组件").font(.system(size: 15)).foregroundStyle(palette.secondary)
+        Text("如何添加小组件").scaledFont(15, relativeTo: .subheadline).foregroundStyle(palette.secondary)
             .frame(maxWidth: .infinity, alignment: .center).padding(.top, 2)
         if SharedStorage.cacheSharingAvailable {
-            Text("长按桌面组件编辑左右账号").font(.system(size: 12)).foregroundStyle(palette.tertiary)
+            Text("长按桌面组件编辑左右账号").scaledFont(12, relativeTo: .caption).foregroundStyle(palette.tertiary)
                 .frame(maxWidth: .infinity, alignment: .center)
         }
         loginCard
@@ -539,7 +629,7 @@ struct ContentView: View {
     }
     var footerCard: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if !SharedStorage.sharingAvailable {
+            if !auth.sharingAvailable {
                 Text(SharedStorage.cacheSharingAvailable ? "缓存共享模式：组件不能自行联网刷新，需打开 App 更新。令牌保持原钥匙串位置；购买证书的默认组可能与其他 App 共用，并非 App 私有安全边界。" : "App 私有模式：共享容器不可用，组件无法读取额度。请查看下方诊断。")
                     .font(.footnote).foregroundStyle(palette.secondary)
             }
@@ -548,9 +638,6 @@ struct ContentView: View {
         }.padding(.horizontal, 4)
     }
     // MARK: - 设置
-    /// Recomputed on every render so the card shows the current authorization, not the state when
-    /// the page was first built.
-    var refreshAuthorization: WidgetRefreshAuthorization { DashboardStore.refreshAuthorization() }
     @ViewBuilder var settingsSections: some View {
         AppCard(title: "组件刷新", caption: "默认关闭，先用握手确认共享组", systemImage: "arrow.triangle.2.circlepath", palette: palette) {
             VStack(alignment: .leading, spacing: 12) {
@@ -559,34 +646,34 @@ struct ContentView: View {
                 })).tint(palette.accent)
                     // Refuse the tap only when neither path can authorize a real probed group, so
                     // the switch never sits permanently dead with no way forward.
-                    .disabled(!widgetConsentEnabled && !SharedStorage.canEnableWidgetRefreshConsent && !SharedStorage.canForceWidgetRefreshConsent)
-                Text(widgetConsentEnabled ? (SharedStorage.widgetCanRefresh ? "独立刷新已启用：右上角按钮不打开 App，直接刷新所选账号。" : "已记录同意，但当前握手、钥匙串或所选账号路由不可用；组件安全退回缓存。") : "默认关闭：组件右上角仍有一个控制，但那是「打开 App 刷新」（箭头图标），不会假装在组件内刷新。开启并知悉共享组风险后，它才会变成真正的组件内刷新。")
+                    .disabled(!widgetConsentEnabled && !auth.canEnableConsent && !auth.canForceConsent)
+                Text(widgetConsentEnabled ? (auth.widgetCanRefresh ? "独立刷新已启用：右上角按钮不打开 App，直接刷新所选账号。" : "已记录同意，但当前握手、钥匙串或所选账号路由不可用；组件安全退回缓存。") : "默认关闭：组件右上角仍有一个控制，但那是「打开 App 刷新」（箭头图标），不会假装在组件内刷新。开启并知悉共享组风险后，它才会变成真正的组件内刷新。")
                     .font(.footnote).foregroundStyle(palette.secondary)
-                if let consent = SharedStorage.consent, consent.forced == true {
+                if auth.forcedConsent {
                     Text("当前是「未完成跨进程验证」的强制授权：组件会用实测组真实发起刷新。如果这次重签没有把同一个 keychain-access-groups 同时给 App 和扩展，组件会读不到凭据，那时它显示「刷新失败 · 保留缓存」，不会编造数字——遇到这种显示说明是签名权限的问题，而不是额度接口的问题。")
                         .font(.footnote).foregroundStyle(palette.warning)
                 }
-                Text(refreshAuthorization.text)
+                Text(auth.authorizationText)
                     .font(.caption.monospaced()).foregroundStyle(palette.secondary).textSelection(.enabled)
                 if !widgetConsentEnabled {
-                    if SharedStorage.canEnableWidgetRefreshConsent {
+                    if auth.canEnableConsent {
                         Text("可以开启：握手已确认，打开上面的开关并确认风险提示即可。").font(.footnote).foregroundStyle(palette.secondary)
-                    } else if SharedStorage.canForceWidgetRefreshConsent {
+                    } else if auth.canForceConsent {
                         Text("可以直接开启：本机有可用的实测 keychain 组，只是跨进程握手没走完（它要求组件在 App 运行时渲染一次并写回，组件没及时重渲染就走不完）。打开开关并确认风险后，会记录为「未完成跨进程验证」的强制授权；组件随后会真实尝试刷新，失败时保留缓存并说明原因。")
                             .font(.footnote).foregroundStyle(palette.secondary)
                         Button("开始非敏感跨进程验证（可选）") {
                             do { try SharedStorage.startHandshake(); handshakeStatus = SharedStorage.handshakeText
                                  widgetConsentEnabled = SharedStorage.consent != nil
-                                 WidgetCenter.shared.reloadAllTimelines() }
+                                 WidgetCenter.shared.reloadAllTimelines(); Task { await reloadAuth() } }
                             catch { handshakeStatus = error.localizedDescription }
                         }.font(.footnote)
                     } else {
-                        Text("下一步：" + SharedStorage.widgetConsentBlockerText)
+                        Text("下一步：" + auth.blockerText)
                             .font(.footnote).foregroundStyle(palette.warning)
                         Button("开始非敏感跨进程验证") {
                             do { try SharedStorage.startHandshake(); handshakeStatus = SharedStorage.handshakeText
                                  widgetConsentEnabled = SharedStorage.consent != nil
-                                 WidgetCenter.shared.reloadAllTimelines() }
+                                 WidgetCenter.shared.reloadAllTimelines(); Task { await reloadAuth() } }
                             catch { handshakeStatus = error.localizedDescription }
                         }.font(.footnote)
                         Text("顺序：1) 点这里开始握手；2) 回桌面让组件渲染一次（它会读取随机挑战并写回）；3) 回到 App 点「检查握手结果」；4) 打开上面的开关。重签时 App 与扩展必须是同一张证书、同一份 profile，并且都带同一个 App Group 与 keychain-access-groups —— 缺任意一项，握手都无法完成，组件会一直停在「打开 App 刷新」。")
@@ -615,19 +702,19 @@ struct ContentView: View {
                 DisclosureGroup("共享诊断（不含令牌）") {
                     VStack(alignment: .leading, spacing: 12) {
                         Text(SharedStorage.diagnostics.text)
-                        Text(SharedStorage.widgetDiagnosticText)
+                        Text(auth.widgetDiagnostics)
                         Text(handshakeStatus)
                         Button("开始非敏感跨进程验证") {
-                            do { try SharedStorage.startHandshake(); handshakeStatus = SharedStorage.handshakeText; widgetConsentEnabled = SharedStorage.consent != nil; WidgetCenter.shared.reloadAllTimelines() }
+                            do { try SharedStorage.startHandshake(); handshakeStatus = SharedStorage.handshakeText; widgetConsentEnabled = SharedStorage.consent != nil; WidgetCenter.shared.reloadAllTimelines(); Task { await reloadAuth() } }
                             catch { handshakeStatus = error.localizedDescription }
                         }
-                        Button("检查握手结果") { handshakeStatus = SharedStorage.handshakeText; model.reloadAccounts() }
+                        Button("检查握手结果") { handshakeStatus = SharedStorage.handshakeText; model.reloadAccounts(); Task { await reloadAuth() } }
                         Text("安全选择：开关默认关闭。开启前须当前同组握手成功；只按实测精确组访问原有令牌，不迁移、不复制。关闭仅停止新组件请求，保留全部账号及令牌；已发出的请求无法收回，已完成的令牌轮换仍需安全保存。同组其他 App 可能读取或修改令牌；已泄露令牌不能靠关闭收回。重新开始握手会关闭授权。")
                     }.font(.caption.monospaced()).textSelection(.enabled).foregroundStyle(palette.secondary)
                 }.tint(palette.secondary)
             }
         }
-        DeepSeekPanel()
+        DeepSeekPanel(model: model)
         AntigravityPanel(model: model, palette: palette)
     }
 }
@@ -680,12 +767,12 @@ struct AccountCard: View {
                 ) {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(alignment: .firstTextBaseline) {
-                    Text("每周").font(.system(size: 15)).foregroundStyle(palette.secondary)
+                    Text("每周").scaledFont(15, relativeTo: .subheadline).foregroundStyle(palette.secondary)
                     Spacer(minLength: 8)
-                    Text(percent(weekly?.remaining)).font(.system(size: 16, weight: .semibold)).monospacedDigit().foregroundStyle(palette.primary)
+                    Text(percent(weekly?.remaining)).scaledFont(16, weight: .semibold, relativeTo: .callout).monospacedDigit().foregroundStyle(palette.primary)
                 }
                 DashMeter(remainingPercent: weekly?.remaining, palette: palette)
-                Text(RelativeTime.text(weekly?.resetDate)).font(.system(size: 13)).monospacedDigit().foregroundStyle(palette.secondary)
+                Text(RelativeTime.text(weekly?.resetDate)).scaledFont(13, relativeTo: .footnote).monospacedDigit().foregroundStyle(palette.secondary)
                     .frame(maxWidth: .infinity, alignment: .trailing)
                 if expanded {
                     Rectangle().fill(palette.divider).frame(height: 1).padding(.vertical, 4)
@@ -730,10 +817,10 @@ struct DeepSeekAccountCard: View {
                 ) {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(alignment: .firstTextBaseline) {
-                    Text("总余额").font(.system(size: 15)).foregroundStyle(palette.secondary)
+                    Text("总余额").scaledFont(15, relativeTo: .subheadline).foregroundStyle(palette.secondary)
                     Spacer(minLength: 8)
                     Text(Money.text(info?.total, currency: info?.currency))
-                        .font(.system(size: 22, weight: .bold)).monospacedDigit().foregroundStyle(palette.primary)
+                        .scaledFont(22, weight: .bold, relativeTo: .title2).monospacedDigit().foregroundStyle(palette.primary)
                         .lineLimit(1).minimumScaleFactor(0.5)
                 }
                 Rectangle().fill(palette.divider).frame(height: 1).padding(.vertical, 4)
@@ -770,10 +857,10 @@ struct AntigravityCard: View {
                 if let tightest = snapshot?.usage.tightestRemaining {
                     VStack(alignment: .leading, spacing: 6) {
                         HStack(alignment: .firstTextBaseline) {
-                            Text("总用量").font(.system(size: 15)).foregroundStyle(palette.secondary)
+                            Text("总用量").scaledFont(15, relativeTo: .subheadline).foregroundStyle(palette.secondary)
                             Spacer(minLength: 8)
                             Text("\(Int(tightest.rounded()))%")
-                                .font(.system(size: 22, weight: .bold)).monospacedDigit().foregroundStyle(palette.primary)
+                                .scaledFont(22, weight: .bold, relativeTo: .title2).monospacedDigit().foregroundStyle(palette.primary)
                         }
                         DashMeter(remainingPercent: tightest, palette: palette)
                     }

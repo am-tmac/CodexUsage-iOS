@@ -58,8 +58,9 @@ class WidgetRefreshContract(unittest.TestCase):
         self.assertIn('SharedStorage.cacheSharingAvailable, let group = SharedStorage.permittedGroup', store)
         self.assertIn('row.credentialGroup == group', store)
         self.assertIn('Toggle("允许组件独立联网刷新"', app)
-        self.assertIn('.disabled(!widgetConsentEnabled && !SharedStorage.canEnableWidgetRefreshConsent && !SharedStorage.canForceWidgetRefreshConsent)', app)
-        self.assertIn('SharedStorage.widgetConsentBlockerText', app)
+        self.assertIn('.disabled(!widgetConsentEnabled && !auth.canEnableConsent && !auth.canForceConsent)', app)
+        self.assertIn('blockerText: SharedStorage.widgetConsentBlockerText', app)
+        self.assertIn('Text("下一步：" + auth.blockerText)', app)
         self.assertIn('Button("开始非敏感跨进程验证")', app)
     def test_consent_switch_can_never_dead_end_on_a_resigned_device(self):
         # The handshake round trip needs the extension to render while the App runs, which a
@@ -77,10 +78,11 @@ class WidgetRefreshContract(unittest.TestCase):
         self.assertIn('connected: (try? session.appConfirmed(read: session.read)) == true', storage)
         self.assertIn('consent.permits(group: diagnostics.selectedGroup, handshakeID: session.id', storage)
         # The switch is disabled only when NEITHER path can authorize a real group.
-        self.assertIn('.disabled(!widgetConsentEnabled && !SharedStorage.canEnableWidgetRefreshConsent && !SharedStorage.canForceWidgetRefreshConsent)', app)
+        self.assertIn('.disabled(!widgetConsentEnabled && !auth.canEnableConsent && !auth.canForceConsent)', app)
         self.assertIn('try SharedStorage.setWidgetRefreshConsent(true, forced: true)', app)
         # A forced consent is disclosed in the UI, and its failure mode is stated honestly.
-        self.assertIn('consent.forced == true', app)
+        self.assertIn('forcedConsent: consent?.forced == true', app)
+        self.assertIn('if auth.forcedConsent {', app)
         self.assertIn('刷新失败 · 保留缓存', app)
     def test_claude_sign_in_lives_on_the_status_page_next_to_the_gpt_login(self):
         # It is an account login, not a setting: putting it under 设置 made it look missing.
@@ -96,7 +98,7 @@ class WidgetRefreshContract(unittest.TestCase):
         # sessionKey/key path are DELETED, not hidden — no paste field, no cookie store, no
         # key-based fetch, no allowlist of challenge hosts. The provider is a real sign-in.
         for name in ['App/ClaudePanel.swift', 'Shared/Claude.swift', 'App/CodexUsageApp.swift',
-                     'Widget/CodexUsageWidget.swift', 'Scripts/package_widget_build25.py']:
+                     'Widget/CodexUsageWidget.swift', 'Scripts/package_widget_build26.py']:
             text = (ROOT / name).read_text()
             self.assertNotIn('sessionKey', text)
             self.assertNotIn('saveCookie', text)

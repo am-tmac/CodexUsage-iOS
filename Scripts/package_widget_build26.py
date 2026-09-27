@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Package private-ID unsigned build 25, rejecting stale or signed payloads.
+"""Package private-ID unsigned build 26, rejecting stale or signed payloads.
 
-Build 25 keeps the build 24 UI and fixes the review findings: rotated tokens are never dropped,
+Build 26 keeps the build 24 look at default text size: status-page errors, one DeepSeek model, Claude-aware empty state, Dynamic Type text, off-render keychain reads; plus the build 25 review fixes (rotated tokens are never dropped,
 Antigravity errors no longer wipe good data, the Claude paste-code login works and checks state.
 
 Earlier build 22 addressed these reports against build 21:
@@ -23,7 +23,7 @@ import subprocess
 import zipfile
 
 root = Path(__file__).resolve().parents[1]
-app = root / 'Build25Direct/Build/Products/Release-iphoneos/CodexUsage.app'
+app = root / 'Build26Direct/Build/Products/Release-iphoneos/CodexUsage.app'
 appex = app / 'PlugIns/CodexUsageWidget.appex'
 ids = ('com.example.codexusage', 'com.example.codexusage.Widget')
 for bundle, bundle_id in zip((app, appex), ids):
@@ -31,7 +31,7 @@ for bundle, bundle_id in zip((app, appex), ids):
     assert not (bundle / '_CodeSignature').exists(), bundle
     assert not (bundle / 'embedded.mobileprovision').exists(), bundle
     info = plistlib.loads((bundle / 'Info.plist').read_bytes())
-    assert (info['CFBundleIdentifier'], info['CFBundleVersion'], info['CFBundleShortVersionString'], info['MinimumOSVersion']) == (bundle_id, '25', '2.0', '17.0'), info
+    assert (info['CFBundleIdentifier'], info['CFBundleVersion'], info['CFBundleShortVersionString'], info['MinimumOSVersion']) == (bundle_id, '26', '2.0', '17.0'), info
     assert '$(' not in str(info)
     executable = bundle / info['CFBundleExecutable']
     assert 'arm64' in subprocess.check_output(['lipo', '-archs', str(executable)], text=True)
@@ -61,7 +61,7 @@ assert 'https://api.anthropic.com/api/oauth/usage'.encode() in app_binary
 # The new credential namespace is live, and the pre-OAuth one exists only as the delete target.
 assert 'CodexUsage.Claude.oauth.v1'.encode() in app_binary
 assert 'CodexUsage.Claude.session.v1'.encode() in app_binary
-# --- build 25 review fixes: new user-visible strings (>= 16 bytes) prove this revision ---
+# --- build 26 review fixes: new user-visible strings (>= 16 bytes) prove this revision ---
 assert '授权码格式无法识别，或不属于本次登录'.encode() in app_binary
 assert '登录已失效，请重新点「打开授权页面」'.encode() in app_binary
 assert '授权码格式无法识别，请粘贴页面上显示的整段内容'.encode() not in app_binary   # old message gone
@@ -69,7 +69,7 @@ assert '授权码格式无法识别，请粘贴页面上显示的整段内容'.e
 for gone in ['连接 Claude 账号', '登录页面由网站提供', '已阻止非 Claude 或已知登录提供商']:
     assert gone.encode() not in app_binary, gone
 
-out = root / 'Dist/CodexUsage-widget-build25-unsigned.ipa'
+out = root / 'Dist/CodexUsage-widget-build26-unsigned.ipa'
 out.parent.mkdir(exist_ok=True)
 with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as archive:
     for path in app.rglob('*'):
@@ -79,7 +79,7 @@ with zipfile.ZipFile(out) as archive:
     assert archive.testzip() is None
     for suffix, bundle_id in (('', ids[0]), ('PlugIns/CodexUsageWidget.appex/', ids[1])):
         info = plistlib.loads(archive.read('Payload/CodexUsage.app/' + suffix + 'Info.plist'))
-        assert (info['CFBundleIdentifier'], info['CFBundleVersion'], info['CFBundleShortVersionString']) == (bundle_id, '25', '2.0')
+        assert (info['CFBundleIdentifier'], info['CFBundleVersion'], info['CFBundleShortVersionString']) == (bundle_id, '26', '2.0')
 print(out)
 print('sha256:', hashlib.sha256(out.read_bytes()).hexdigest())
-print('bundle IDs:', *ids, 'version: 2.0 (25)')
+print('bundle IDs:', *ids, 'version: 2.0 (26)')

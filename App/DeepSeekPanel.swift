@@ -3,30 +3,32 @@ import WidgetKit
 
 /// DeepSeek key management. Same black-card visual language as the status page; every original
 /// string (including the keychain risk notice) is kept word for word.
+///
+/// Reads and writes through the App's single `UsageModel`, so a key added or removed here shows up
+/// on 状态 at once, and a return to the foreground refreshes each account once (the model does it),
+/// not once per screen.
 struct DeepSeekPanel: View {
+    @ObservedObject var model: UsageModel
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.colorScheme) private var scheme
-    @State private var ids: [String] = []
-    @State private var snapshots: [String: DeepSeekSnapshot] = [:]
+    private var ids: [String] { model.deepSeekIDs }
+    private var snapshots: [String: DeepSeekSnapshot] { model.balances }
     @State private var key = ""
     @State private var replacing: String?
     @State private var busy = false
     @State private var consent = false
     @State private var message: String?
     var palette: AppPalette { .resolve(scheme) }
+    /// Keychain or snapshot changed: republish through the model (it also rebuilds the widget
+    /// dashboard) and ask WidgetKit to redraw.
     func reload() {
-        ids = (try? DeepSeekStore.ids()) ?? []
-        snapshots = Dictionary(uniqueKeysWithValues: ids.compactMap { id in DeepSeekStore.snapshot(id).map { (id, $0) } })
-        try? DashboardStore.publish()
+        model.reloadAccounts()
         WidgetCenter.shared.reloadAllTimelines()
     }
-    func refresh(_ id: String? = nil) async {
-        guard !busy else { return }
-        busy = true; message = nil
-        defer { busy = false; reload() }
-        for account in id.map({ [$0] }) ?? ids {
-            do { _ = try await DeepSeekService.shared.refresh(id: account) }
-            catch { message = (error as? DeepSeekError)?.localizedDescription ?? "余额更新失败，保留缓存" }
+    func refresh(_ id: String) async {
+        message = nil
+        if let error = await model.refreshDeepSeek(id) {
+            message = (error as? DeepSeekError)?.localizedDescription ?? "余额更新失败，保留缓存"
         }
     }
     var body: some View {
@@ -46,7 +48,7 @@ struct DeepSeekPanel: View {
                             }
                             AppRow(label: "接口状态", value: snapshot.balance.isAvailable ? "API 余额可用" : "API 余额不可用", palette: palette)
                             AppRow(label: "更新时间", value: RelativeTime.text(snapshot.updatedAt) + (snapshot.isStale() ? " · 已过期" : ""), palette: palette)
-                            if WidgetRefreshAttempt.load(id).failed {
+                            if model.deepSeekFailed.contains(id) {
                                 Text("刷新失败 · 保留上次余额").font(.caption).foregroundStyle(palette.warning)
                             }
                         } else {
@@ -61,7 +63,7 @@ struct DeepSeekPanel: View {
                                     catch { message = "移除失败，请解锁后重试" }
                                 }
                             }
-                        }.buttonStyle(.bordered).disabled(busy).tint(palette.accent)
+                        }.buttonStyle(.bordered).disabled(busy || model.busy).tint(palette.accent)
                     }
                 }
             }
@@ -83,7 +85,7 @@ struct DeepSeekPanel: View {
                                 do {
                                     let id = try await DeepSeekService.shared.install(key: entered, replacing: replacingID)
                                     if replacing == replacingID { replacing = nil; consent = false }
-                                    _ = try await DeepSeekService.shared.refresh(id: id)
+                                    _ = try await DeepSeekService.shared.refresh(id: id, widget: false)
                                 } catch is CancellationError {
                                 } catch { message = (error as? DeepSeekError)?.localizedDescription ?? "保存或读取失败，请解锁并检查签名" }
                                 busy = false; reload()
@@ -95,11 +97,10 @@ struct DeepSeekPanel: View {
                 }
             }
         }
-        .task { reload() }
-        .onOpenURL { url in if url.scheme == "codexusage" { Task { await refresh() } } }
+        // Foreground refresh and the widget's open-App link are handled once by ContentView; this
+        // panel only has to wipe the half-typed key when the App leaves the foreground.
         .onChange(of: scenePhase) { _, phase in
             if phase != .active { key = ""; consent = false }
-            else { reload(); Task { await refresh() } }
         }
         .onDisappear { key = ""; consent = false }
     }
