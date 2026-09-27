@@ -207,8 +207,11 @@ public enum SharedStorage {
     }
     static var sharingAvailable: Bool { permittedGroup != nil }
     static var sharingMessage: String { "共享未授权 · 打开 App 配置签名" }
+    /// Test seam: `swift test` runs without an App Group, so tests point the cache at a temp dir.
+    nonisolated(unsafe) static var containerOverride: URL?
     static func container() throws -> URL {
-        try routing.cacheContainer(localURL: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("CodexUsage", isDirectory: true))
+        if let containerOverride { return try container(sharedURL: containerOverride, localURL: containerOverride) }
+        return try routing.cacheContainer(localURL: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("CodexUsage", isDirectory: true))
     }
     static func container(sharedURL: URL?, localURL: URL) throws -> URL {
         let url = sharedURL ?? localURL
@@ -563,6 +566,16 @@ struct WidgetRefreshAttempt: Codable {
         try JSONEncoder().encode(self).write(to: Self.url(account), options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
     }
 }
+/// A refresh grant usually invalidates the previous refresh token the moment it answers, so a
+/// rotated token that is not written down is a lost login. Retry the write once (a keychain that
+/// is briefly locked often recovers), then fail loudly instead of carrying on with a token that
+/// exists only in memory.
+enum RotationPersistence {
+    static func save(_ write: () throws -> Void) throws {
+        do { try write() } catch { try write() }
+    }
+}
+
 public actor UsageService {
     public static let shared = UsageService()
     private let api: AuthAPI
@@ -627,14 +640,16 @@ public actor UsageService {
                 try checkPermission()
                 credentials = try await api.refresh(credentials)
                 // Save a completed rotation before observing cancellation/revocation.
-                try SharedStorage.save(credentials, account: id, route: route)
+                let rotated = credentials
+                try RotationPersistence.save { try SharedStorage.save(rotated, account: id, route: route) }
             }
             let usage: UsageResponse
             do { try checkPermission(); usage = try await api.usage(credentials) }
             catch ServiceError.http(401) {
                 try checkPermission()
                 credentials = try await api.refresh(credentials)
-                try SharedStorage.save(credentials, account: id, route: route)
+                let rotated = credentials
+                try RotationPersistence.save { try SharedStorage.save(rotated, account: id, route: route) }
                 try checkPermission()
                 usage = try await api.usage(credentials)
             }

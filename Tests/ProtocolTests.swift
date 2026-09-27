@@ -12,12 +12,25 @@ actor ScriptedTransport: HTTPTransport {
         return (Data(reply.0.utf8), reply.1)
     }
 }
+/// `swift test` has no App Group entitlement, and macOS still hands back the TCC-protected
+/// group-container path, so lock files and snapshots could not be created there. Every test that
+/// touches storage routes the cache container to a private temporary directory instead.
+enum TestContainer {
+    static let url: URL = {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("CodexUsageTests-" + UUID().uuidString, isDirectory: true)
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }()
+    static func install() { SharedStorage.containerOverride = url }
+}
+
 struct CancelledBalanceTransport: HTTPTransport {
     func send(_ request: URLRequest) async throws -> (Data, Int) {
         throw URLError(.cancelled)
     }
 }
 final class ProtocolTests: XCTestCase {
+    override class func setUp() { super.setUp(); TestContainer.install() }
     func testDeepSeekURLCancellationIsNotANetworkFailure() async {
         do {
             _ = try await DeepSeekAPI(transport: CancelledBalanceTransport()).balance(key: "synthetic")

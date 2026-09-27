@@ -196,18 +196,28 @@ final class ClaudeLogin: ObservableObject {
         }
     }
 
-    /// Exchange the pasted one-time code. Everything else is rejected by the parser.
+    /// Exchange the pasted one-time code. Only a code for this login's state is accepted.
     func submitPastedCode() {
-        guard case .code(let code, let pastedState)? = ClaudeOAuth.parsePastedCode(codeInput) else {
-            message = "授权码格式无法识别，请粘贴页面上显示的整段内容。"
+        guard case .code(let code, let state)? = ClaudeOAuth.parsePastedCode(codeInput, expectedState: self.state) else {
+            message = self.state.isEmpty
+                ? "登录已失效，请重新点「打开授权页面」。"
+                : "授权码格式无法识别，或不属于本次登录，请粘贴本次授权页面上显示的整段内容。"
             return
         }
-        let state = pastedState.isEmpty ? self.state : pastedState
         codeInput = ""
         showCodePaste = false
         authorizeURL = nil
         busy = true
         Task { @MainActor in await complete(code: code, state: state, redirectURI: ClaudeOAuth.consoleRedirectURI) }
+    }
+
+    /// The consent sheet was swiped away. In the paste flow that is the expected next step — the
+    /// user copied the code and now pastes it — so the verifier and state must survive; only the
+    /// loopback flow is abandoned.
+    func sheetDismissed() {
+        guard showCodePaste else { cancel(); return }
+        authorizeURL = nil
+        busy = false   // "完成登录" is disabled while busy; the paste step starts now.
     }
 
     func cancel() {
@@ -240,7 +250,7 @@ final class ClaudeLogin: ObservableObject {
     }
 
     private func complete(code: String, state: String, redirectURI: String) async {
-        defer { busy = false }
+        defer { busy = false; verifier = ""; self.state = "" }   // one exchange per login attempt
         do {
             let tokens = try await ClaudeAPI().exchange(code: code, verifier: verifier, state: state, redirectURI: redirectURI)
             guard let refresh = tokens.refreshToken else { throw ClaudeFailure.malformed }
@@ -320,7 +330,7 @@ struct ClaudePanel: View {
                 if let loginMessage = login.message { Text(loginMessage).font(.footnote).foregroundStyle(palette.secondary) }
             }
         }
-        .sheet(isPresented: Binding(get: { login.authorizeURL != nil }, set: { presented in if !presented { login.cancel() } })) {
+        .sheet(isPresented: Binding(get: { login.authorizeURL != nil }, set: { presented in if !presented { login.sheetDismissed() } })) {
             if let url = login.authorizeURL { ClaudeWebSheet(url: url).ignoresSafeArea() }
         }
         .onReceive(NotificationCenter.default.publisher(for: .claudeSignedIn)) { _ in

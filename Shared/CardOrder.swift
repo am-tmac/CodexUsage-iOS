@@ -33,7 +33,8 @@ enum CardOrder {
 
     /// Applies a saved order to the live keys.
     static func sorted(_ keys: [String], by order: [String]) -> [String] {
-        let rank = Dictionary(uniqueKeysWithValues: order.enumerated().map { ($1, $0) })
+        // A corrupt saved order (duplicate keys) keeps each key's first position instead of trapping.
+        let rank = Dictionary(order.enumerated().map { ($1, $0) }, uniquingKeysWith: { first, _ in first })
         return keys.enumerated().sorted { left, right in
             let a = rank[left.element] ?? (order.count + left.offset)
             let b = rank[right.element] ?? (order.count + right.offset)

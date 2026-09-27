@@ -85,7 +85,7 @@ import WidgetKit
                 catch { message = error.localizedDescription }
             }
             if antigravityInstalled {
-                do { antigravity = try await AntigravityService.shared.refresh() }
+                do { antigravity = try await AntigravityService.shared.refresh(widget: false) }
                 catch is CancellationError { return }
                 catch { message = error.localizedDescription }
             }

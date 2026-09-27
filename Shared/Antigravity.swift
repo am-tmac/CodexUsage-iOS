@@ -134,6 +134,10 @@ struct AntigravityAPI {
         try Task.checkCancellation()
         let quotas = try await availableModels(accessToken: access, project: assist.project)
         try Task.checkCancellation()
+        // Nothing readable at all is a changed or broken response, not an account with zero
+        // quota: never let it replace a good snapshot.
+        guard assist.tier != nil || assist.availableCredits != nil || assist.monthlyCredits != nil || !quotas.isEmpty
+        else { throw AntigravityError.malformed }
         return AntigravityUsage(tier: assist.tier, availableCredits: assist.availableCredits,
                                 monthlyCredits: assist.monthlyCredits, quotas: quotas)
     }
@@ -147,12 +151,15 @@ struct AntigravityAPI {
     }
 
     /// POST /v1internal:fetchAvailableModels — the per-model quota the IDE draws its bars from.
-    /// A 403 here is normal for some accounts (the credits from loadCodeAssist still stand).
+    /// A 403 here is normal for some accounts (the credits from loadCodeAssist still stand), so
+    /// only a 403 means "no per-model quota". Every other failure — 401, 429, 5xx, network,
+    /// cancellation — is thrown, so the caller keeps the last good snapshot.
     func availableModels(accessToken: String, project: String?) async throws -> [AntigravityQuota] {
         let body: [String: Any] = project.map { ["project": $0] } ?? [:]
         let payload = try JSONSerialization.data(withJSONObject: body)
-        guard let data = try? await post(path: "/v1internal:fetchAvailableModels", accessToken: accessToken, payload: payload) else { return [] }
-        return Self.parseModels(data)
+        do {
+            return Self.parseModels(try await post(path: "/v1internal:fetchAvailableModels", accessToken: accessToken, payload: payload))
+        } catch PostFailure.forbidden { return [] }
     }
 
     /// Tolerant reader for loadCodeAssist: prompt credits come from `availablePromptCredits` /
@@ -261,7 +268,16 @@ struct AntigravityAPI {
         return refresh
     }
 
+    /// Internal marker so `availableModels` can tell a 403 apart; callers other than that one see
+    /// it as `.unauthorized`, exactly as before.
+    private enum PostFailure: Error { case forbidden }
+
     private func post(path: String, accessToken: String, payload: Data) async throws -> Data {
+        do { return try await postOnce(path: path, accessToken: accessToken, payload: payload) }
+        catch PostFailure.forbidden where !path.hasSuffix(":fetchAvailableModels") { throw AntigravityError.unauthorized }
+    }
+
+    private func postOnce(path: String, accessToken: String, payload: Data) async throws -> Data {
         try Task.checkCancellation()
         var request = URLRequest(url: URL(string: "https://cloudcode-pa.googleapis.com" + path)!)
         request.httpMethod = "POST"
@@ -279,7 +295,8 @@ struct AntigravityAPI {
         try Task.checkCancellation()
         switch status {
         case 200: break
-        case 401, 403: throw AntigravityError.unauthorized
+        case 401: throw AntigravityError.unauthorized
+        case 403: throw PostFailure.forbidden
         case 429: throw AntigravityError.rateLimited
         default: throw AntigravityError.unavailable
         }
@@ -308,7 +325,7 @@ struct AntigravitySnapshot: Codable, Equatable {
 }
 
 
-// MARK: - Keychain + snapshot store (App-only provider: the widget shows Codex and DeepSeek only)
+// MARK: - Keychain + snapshot store (the widget may refresh it only under the sharing permission)
 
 enum AntigravityStore {
     static let service = "CodexUsage.Antigravity.refresh-token.v1"
@@ -363,13 +380,42 @@ actor AntigravityService {
         let lease = try CredentialLease(account: AntigravityStore.account); defer { withExtendedLifetime(lease) {} }
         try AntigravityStore.remove()
     }
-    func refresh(token: String? = nil) async throws -> AntigravitySnapshot {
-        try Task.checkCancellation()
-        guard let token = try token ?? AntigravityStore.token() else { throw AntigravityError.unauthorized }
-        let usage = try await api.usage(refreshToken: token)
-        let value = AntigravitySnapshot(usage: usage, updatedAt: Date())
-        try AntigravityStore.save(value)
-        return value
+    /// Same guard rails as the DeepSeek and Claude services: the extension needs the sharing
+    /// permission, holds the account lease for the whole cycle, and honours the persisted
+    /// throttle/backoff so a timeline reload never hammers Google. A failure keeps the last good
+    /// snapshot untouched.
+    func refresh(token: String? = nil, widget: Bool = SharedStorage.isWidget) async throws -> AntigravitySnapshot {
+        try await refresh(token: token, widget: widget, permission: { DashboardStore.canRefresh(AntigravityStore.account, provider: "antigravity") })
+    }
+    func refresh(token: String?, widget: Bool, permission: () -> Bool) async throws -> AntigravitySnapshot {
+        let id = AntigravityStore.account
+        func check() throws {
+            try Task.checkCancellation()
+            if widget && !permission() { throw AntigravityError.storage }
+        }
+        try check()
+        let lease = try CredentialLease(account: id); defer { withExtendedLifetime(lease) {} }
+        var attempt = WidgetRefreshAttempt.load(id)
+        attempt.recoverInterrupted(Date())
+        if widget && !attempt.allows(Date()) {
+            try attempt.save(id)
+            if let cache = AntigravityStore.snapshot() { return cache }
+            throw AntigravityError.rateLimited
+        }
+        attempt.begin(Date()); try attempt.save(id)
+        do {
+            try check()
+            guard let token = try token ?? AntigravityStore.token() else { throw AntigravityError.unauthorized }
+            let usage = try await api.usage(refreshToken: token)
+            try check()
+            let value = AntigravitySnapshot(usage: usage, updatedAt: Date())
+            try AntigravityStore.save(value)
+            attempt.succeed(Date()); try attempt.save(id)
+            return value
+        } catch {
+            attempt.fail(Date()); try? attempt.save(id)
+            throw error
+        }
     }
 }
 

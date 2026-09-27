@@ -190,7 +190,9 @@ final class AntigravityLogin: ObservableObject {
 
     private func finished(_ result: Result<String, Error>) async {
         authorizeURL = nil
-        busy = false
+        // Stay busy until the exchange is done: a second tap on 登录 during the await would
+        // otherwise start a new flow whose verifier/state this one then wipes.
+        defer { busy = false; listener = nil; verifier = ""; state = "" }
         switch result {
         case .success(let code):
             do {
@@ -203,9 +205,6 @@ final class AntigravityLogin: ObservableObject {
         case .failure(let error):
             message = error.localizedDescription
         }
-        listener = nil
-        verifier = ""
-        state = ""
     }
 }
 

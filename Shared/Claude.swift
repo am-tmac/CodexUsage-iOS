@@ -104,16 +104,19 @@ enum ClaudeOAuth {
         if let code = value("code"), !code.isEmpty { return .code(code, expectedState) }
         return nil
     }
-    /// The console flow shows `code#state` for the user to copy. Only the one-time code and the
-    /// state that came with it are accepted; anything else is rejected rather than guessed.
-    static func parsePastedCode(_ text: String) -> Callback? {
+    /// The console flow shows `code#state` for the user to copy. Only a code issued for the login
+    /// in progress is accepted: a state that differs from `expectedState` is rejected, and with no
+    /// login in progress (empty `expectedState`) nothing is accepted at all.
+    static func parsePastedCode(_ text: String, expectedState: String) -> Callback? {
+        guard !expectedState.isEmpty else { return nil }
         let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty, value.utf8.count < 4096,
               value.utf8.allSatisfy({ $0 > 32 && $0 < 127 || $0 == 35 }) else { return nil }
         let parts = value.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false)
         guard let code = parts.first, !code.isEmpty else { return nil }
         let state = parts.count > 1 ? String(parts[1]) : ""
-        return .code(String(code), state)
+        guard state.isEmpty || state == expectedState else { return nil }
+        return .code(String(code), expectedState)
     }
 }
 
@@ -312,10 +315,20 @@ struct ClaudeAPI {
     }
 }
 
+/// Keychain access for the service, injectable so the rotation rules can be tested without a
+/// signed keychain. Production always uses `.keychain`.
+struct ClaudeCredentialStore {
+    let load: (_ widget: Bool) throws -> ClaudeCredential
+    let save: (_ value: ClaudeCredential, _ widget: Bool) throws -> Void
+    static let keychain = ClaudeCredentialStore(load: { try ClaudeStore.credential(widget: $0) },
+                                                save: { try ClaudeStore.saveCredential($0, widget: $1) })
+}
+
 actor ClaudeService {
     static let shared = ClaudeService()
     let api: ClaudeAPI
-    init(api: ClaudeAPI = ClaudeAPI()) { self.api = api }
+    let store: ClaudeCredentialStore
+    init(api: ClaudeAPI = ClaudeAPI(), store: ClaudeCredentialStore = .keychain) { self.api = api; self.store = store }
 
     /// App-only: store the refresh token of a completed sign-in. The access token is discarded.
     func install(refreshToken: String) throws {
@@ -330,7 +343,10 @@ actor ClaudeService {
         try ClaudeStore.remove()
     }
     func refresh(widget: Bool = SharedStorage.isWidget) async throws -> ClaudeSnapshot {
-        if widget && !DashboardStore.canRefresh(ClaudeStore.id, provider: "claude") { throw ClaudeFailure.storage }
+        try await refresh(widget: widget, permission: { DashboardStore.canRefresh(ClaudeStore.id, provider: "claude") })
+    }
+    func refresh(widget: Bool, permission: () -> Bool) async throws -> ClaudeSnapshot {
+        if widget && !permission() { throw ClaudeFailure.storage }
         let lease = try CredentialLease(account: ClaudeStore.id); defer { withExtendedLifetime(lease) {} }
         var attempt = WidgetRefreshAttempt.load(ClaudeStore.id)
         attempt.recoverInterrupted(Date())
@@ -341,14 +357,15 @@ actor ClaudeService {
         }
         attempt.begin(Date()); try attempt.save(ClaudeStore.id)
         do {
-            let credential = try ClaudeStore.credential(widget: widget)
+            let credential = try store.load(widget)
             let tokens = try await api.refreshToken(credential.refreshToken)
             if let rotated = tokens.refreshToken, rotated != credential.refreshToken {
-                // Persist a rotation before using the new token; the App always, the extension
-                // only under the permission that let it read. Never re-persist the old value.
+                // The old refresh token is already dead. Persist the rotation (App and extension
+                // alike) before using the new access token; if it cannot be written, stop here
+                // rather than show numbers from a login that the next refresh will have lost.
                 let updated = ClaudeCredential(refreshToken: rotated, obtainedAt: Date())
-                if widget { try? ClaudeStore.saveCredential(updated, widget: true) }
-                else { try ClaudeStore.saveCredential(updated) }
+                do { try RotationPersistence.save { try store.save(updated, widget) } }
+                catch { throw ClaudeFailure.storage }
             }
             let value = try await api.usage(accessToken: tokens.accessToken)
             try Task.checkCancellation()
