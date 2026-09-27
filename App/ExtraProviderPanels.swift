@@ -12,7 +12,7 @@ struct AntigravityPanel: View {
     @State private var message: String?
     var body: some View {
         AppCard(title: "Antigravity 用量", caption: "Google 刷新令牌 · 只写本机钥匙串",
-                systemImage: "sparkles", palette: palette) {
+                systemImage: "sparkles", palette: palette, mark: AnyView(BrandMark(brand: .antigravity, palette: palette))) {
             VStack(alignment: .leading, spacing: 12) {
                 if model.antigravityInstalled {
                     Text("已保存一个 Google 刷新令牌。App 用它换取短期访问令牌，只调用 Antigravity 的配额与额度接口，不发送任何请求到模型。")

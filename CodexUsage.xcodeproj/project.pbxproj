@@ -24,6 +24,7 @@
 		3BBB077663F33F1565103ABE /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C5F05FAA8AB62995F8E75D7F /* Foundation.framework */; };
 		4BDC7DE3610CDA11CA606FA2 /* AuthAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0D3DCF62F3AF0B9E318E178C /* AuthAPI.swift */; };
 		4D3054D5B0144856B2FE05AF /* Storage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95667A8A372765AE0F8B8BDE /* Storage.swift */; };
+		4E6D2D178F8E50DADD73C2EA /* ConnectViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2E667CD18B332B5450FEDAA /* ConnectViews.swift */; };
 		5C8553A8CCC601D727E6D8F1 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C5F05FAA8AB62995F8E75D7F /* Foundation.framework */; };
 		6B77E310F08B55BD49ED82C7 /* CardOrder.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2F5263D3D4B5BF06E85260F /* CardOrder.swift */; };
 		8764F309F76AD1953284E475 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = D6D0ED7AD91711F0F63CA6B4 /* Assets.xcassets */; };
@@ -97,6 +98,7 @@
 		C431846C75F38BDB4590484C /* DeepSeek.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DeepSeek.swift; path = Shared/DeepSeek.swift; sourceTree = "<group>"; };
 		C5F05FAA8AB62995F8E75D7F /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS26.0.sdk/System/Library/Frameworks/Foundation.framework; sourceTree = DEVELOPER_DIR; };
 		C8EA501153531B2CCF3BA7CB /* DashboardStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DashboardStore.swift; path = Shared/DashboardStore.swift; sourceTree = "<group>"; };
+		D2E667CD18B332B5450FEDAA /* ConnectViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ConnectViews.swift; path = App/ConnectViews.swift; sourceTree = "<group>"; };
 		D2F5263D3D4B5BF06E85260F /* CardOrder.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CardOrder.swift; path = Shared/CardOrder.swift; sourceTree = "<group>"; };
 		D6D0ED7AD91711F0F63CA6B4 /* Assets.xcassets */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = folder.assetcatalog; name = Assets.xcassets; path = App/Assets.xcassets; sourceTree = "<group>"; };
 		DC7E958362A0EF7F09A7D22A /* CodexUsageApp.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CodexUsageApp.swift; path = App/CodexUsageApp.swift; sourceTree = "<group>"; };
@@ -175,6 +177,7 @@
 				F200229134C7A34DC672A63D /* Public.xcconfig */,
 				93E08EC15ADD1F087EEE98F7 /* Claude.swift */,
 				90CB4B875528CAC5F08F7D38 /* ClaudePanel.swift */,
+				D2E667CD18B332B5450FEDAA /* ConnectViews.swift */,
 			);
 			sourceTree = "<group>";
 		};
@@ -356,6 +359,7 @@
 				6B77E310F08B55BD49ED82C7 /* CardOrder.swift in Sources */,
 				27A420E112C76FDC74700913 /* Claude.swift in Sources */,
 				B6C293C1CDA342CD44EFEA21 /* ClaudePanel.swift in Sources */,
+				4E6D2D178F8E50DADD73C2EA /* ConnectViews.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -388,7 +392,7 @@
 				CODEX_APP_BUNDLE_IDENTIFIER = com.personal.CodexUsage;
 				CODE_SIGN_ENTITLEMENTS = Configuration/Shared.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 26;
+				CURRENT_PROJECT_VERSION = 27;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = App/Info.plist;
@@ -421,7 +425,7 @@
 				CLANG_ENABLE_OBJC_WEAK = NO;
 				CODEX_APP_BUNDLE_IDENTIFIER = com.personal.CodexUsage;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 26;
+				CURRENT_PROJECT_VERSION = 27;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -451,7 +455,7 @@
 				CODEX_APP_BUNDLE_IDENTIFIER = com.personal.CodexUsage;
 				CODE_SIGN_ENTITLEMENTS = Configuration/Shared.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 26;
+				CURRENT_PROJECT_VERSION = 27;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = App/Info.plist;
@@ -483,7 +487,7 @@
 				CLANG_ENABLE_OBJC_WEAK = NO;
 				CODEX_APP_BUNDLE_IDENTIFIER = com.personal.CodexUsage;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 26;
+				CURRENT_PROJECT_VERSION = 27;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -512,7 +516,7 @@
 				CODEX_APP_BUNDLE_IDENTIFIER = com.personal.CodexUsage;
 				CODE_SIGN_ENTITLEMENTS = Configuration/Shared.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 26;
+				CURRENT_PROJECT_VERSION = 27;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Widget/Info.plist;
@@ -606,7 +610,7 @@
 				CODEX_APP_BUNDLE_IDENTIFIER = com.personal.CodexUsage;
 				CODE_SIGN_ENTITLEMENTS = Configuration/Shared.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 26;
+				CURRENT_PROJECT_VERSION = 27;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Widget/Info.plist;

@@ -36,7 +36,7 @@ struct DeepSeekPanel: View {
             ForEach(Array(ids.enumerated()), id: \.element) { index, id in
                 AppCard(title: "DeepSeek · 账号 \(index + 1)", caption: "仅 API 平台余额，不是聊天订阅额度。按接口原币种显示，不合并或推算百分比。",
                         systemImage: "water.waves", palette: palette,
-                        mark: AnyView(DeepSeekWhale().fill(palette.primary).frame(width: 26, height: 17))) {
+                        mark: AnyView(BrandMark(brand: .deepseek, palette: palette))) {
                     VStack(alignment: .leading, spacing: 10) {
                         if let snapshot = snapshots[id] {
                             ForEach(Array(snapshot.balance.balanceInfos.enumerated()), id: \.offset) { _, info in

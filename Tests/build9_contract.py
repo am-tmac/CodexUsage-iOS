@@ -14,7 +14,8 @@ class DashboardContract(unittest.TestCase):
         widget = (R/'Widget/CodexUsageWidget.swift').read_text()
         for token in ['AppIntentConfiguration', '.systemSmall, .systemMedium', 'leftAccount', 'rightAccount', 'DashboardStore.canRefresh', 'DeepSeekService.shared.refresh']:
             self.assertIn(token, widget)
-        self.assertIn('DeepSeekPanel(model: model)', (R/'App/CodexUsageApp.swift').read_text())
+        # build 27: the panel moved into the 连接账号 sheet together with every other sign-in.
+        self.assertIn('DeepSeekPanel(model: model)', (R/'App/ConnectViews.swift').read_text())
         # 三种来源都能落到组件槽位里（Codex / DeepSeek / Antigravity；OpenCode 已按用户要求摘除）。
         views = (R/'Shared/UsageViews.swift').read_text()
         for token in ['AntigravityWidgetView', 'DeepSeekStackedCardView', 'CompactUsageView']:

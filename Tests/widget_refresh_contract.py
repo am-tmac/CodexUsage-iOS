@@ -84,15 +84,53 @@ class WidgetRefreshContract(unittest.TestCase):
         self.assertIn('forcedConsent: consent?.forced == true', app)
         self.assertIn('if auth.forcedConsent {', app)
         self.assertIn('刷新失败 · 保留缓存', app)
-    def test_claude_sign_in_lives_on_the_status_page_next_to_the_gpt_login(self):
-        # It is an account login, not a setting: putting it under 设置 made it look missing.
+    def test_every_sign_in_lives_in_the_connect_sheet(self):
+        # Contract change (build 27): the rule used to be "Claude sign-in sits on the status page next
+        # to the ChatGPT login" (under 设置 it looked missing). The user then asked for the
+        # Nowdex-style flow — "+" / empty state → 连接账号 grid → one page per service — so all four
+        # sign-ins moved there together and the status page carries account cards only.
         app = (ROOT / 'App/CodexUsageApp.swift').read_text()
+        connect = (ROOT / 'App/ConnectViews.swift').read_text()
         status = app.split('var statusSections: some View {', 1)[1].split('@ViewBuilder var settingsSections', 1)[0]
         settings = app.split('@ViewBuilder var settingsSections', 1)[1]
-        self.assertIn('loginCard', status)
-        self.assertIn('ClaudePanel(model: model, palette: palette)', status)
-        self.assertLess(status.index('loginCard'), status.index('ClaudePanel(model: model, palette: palette)'))
-        self.assertNotIn('ClaudePanel(model: model, palette: palette)', settings)
+        for panel in ['ClaudePanel(model: model, palette: palette)', 'DeepSeekPanel(model: model)',
+                      'AntigravityPanel(model: model, palette: palette)', 'CodexConnectPanel(model: model, palette: palette)']:
+            self.assertIn(panel, connect)
+            self.assertNotIn(panel, status)
+            self.assertNotIn(panel, settings)
+        self.assertNotIn('loginCard', app)
+        # Reachable from the title bar "+" and from the empty state; the sheet is one per App.
+        self.assertIn('connect = .picker', status)
+        self.assertIn('Button { connect = .picker }', app)
+        self.assertEqual(app.count('.sheet(item: $connect)'), 1)
+        # The empty state lists every provider, and the keychain-boundary alert still gates ChatGPT.
+        self.assertIn('if model.accounts.isEmpty && model.deepSeekIDs.isEmpty && !model.antigravityInstalled && !model.claudeInstalled {', status)
+        self.assertIn('Button("知悉风险，继续登录") { model.login() }', connect)
+        # No demo mode: it could only show invented numbers.
+        self.assertNotIn('体验演示', connect + app)
+    def test_cards_use_official_marks_and_live_countdowns(self):
+        app = (ROOT / 'App/CodexUsageApp.swift').read_text()
+        connect = (ROOT / 'App/ConnectViews.swift').read_text()
+        claude = (ROOT / 'App/ClaudePanel.swift').read_text()
+        catalog = ROOT / 'App/Assets.xcassets'
+        for asset in ['LogoOpenAI', 'LogoClaude', 'LogoDeepSeek', 'LogoAntigravity']:
+            for name in [f'{asset}.png', f'{asset}@2x.png', f'{asset}@3x.png', 'Contents.json']:
+                self.assertTrue((catalog / f'{asset}.imageset' / name).is_file(), f'{asset}/{name}')
+        # The OpenAI mark follows the text colour (black on light, white on dark).
+        import json
+        self.assertEqual(json.loads((catalog / 'LogoOpenAI.imageset/Contents.json').read_text())['properties']['template-rendering-intent'], 'template')
+        for brand in ['.codex', '.deepseek', '.antigravity']:
+            self.assertIn(f'mark: AnyView(BrandMark(brand: {brand}, palette: palette))', app)
+        self.assertIn('mark: AnyView(BrandMark(brand: .claude, palette: palette))', claude)
+        # Countdowns come from the reported reset time and tick while visible — never estimated.
+        self.assertIn('TimelineView(.periodic(from: .now, by: 60))', connect)
+        self.assertIn('Countdown.short(window.reset, now: context.date)', connect)
+        self.assertIn('Countdown.resetLine(date, now: context.date)', connect)
+        # The widget is untouched by this change: no brand marks or countdowns leak into it.
+        views = (ROOT / 'Shared/UsageViews.swift').read_text()
+        widget = (ROOT / 'Widget/CodexUsageWidget.swift').read_text()
+        for token in ['BrandMark', 'Countdown.', 'LogoOpenAI', 'SummaryLine']:
+            self.assertNotIn(token, views + widget)
     def test_claude_signs_in_with_oauth_and_keeps_no_session_secret(self):
         # Contract change (build 21): the embedded cookie-scraping browser and the manual
         # sessionKey/key path are DELETED, not hidden — no paste field, no cookie store, no

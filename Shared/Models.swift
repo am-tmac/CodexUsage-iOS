@@ -205,6 +205,56 @@ public enum Money {
         return formatter.string(from: NSDecimalNumber(decimal: amount)) ?? NSDecimalNumber(decimal: amount).stringValue
     }
 }
+/// The one line a collapsed card shows: the reported window with the least left. Only windows the
+/// service actually returned a share for take part; with none there is no summary at all.
+public enum QuotaSummary {
+    public struct Window: Equatable, Sendable {
+        public let label: String
+        public let remaining: Double?
+        public let reset: Date?
+        public init(label: String, remaining: Double?, reset: Date?) {
+            self.label = label; self.remaining = remaining; self.reset = reset
+        }
+    }
+    public static func tightest(_ windows: [Window]) -> Window? {
+        windows.filter { $0.remaining != nil }.min { $0.remaining! < $1.remaining! }
+    }
+    /// ≤20% remaining is drawn in the danger colour on every card.
+    public static func isLow(_ remaining: Double?) -> Bool { remaining.map { $0 <= 20 } ?? false }
+}
+
+/// Time left until a reset the service reported, as a duration ("5天19时", "2时14分", "14分").
+/// Computed from the API's own reset timestamp — never estimated. Nil when the service gave no
+/// reset time or the moment has already passed (the next refresh brings the new window).
+public enum Countdown {
+    public static func text(to date: Date?, now: Date = Date()) -> String? {
+        guard let date else { return nil }
+        let seconds = Int(date.timeIntervalSince(now).rounded(.down))
+        guard seconds > 0 else { return nil }
+        let minutes = seconds / 60, hours = minutes / 60, days = hours / 24
+        if days > 0 { return "\(days)天" + String(format: "%02d", hours % 24) + "时" }
+        if hours > 0 { return "\(hours)时" + String(format: "%02d", minutes % 60) + "分" }
+        return "\(max(1, minutes))分"
+    }
+    /// "5天19时后重置 · 10月3日 09:12" — countdown first, then the absolute reset moment.
+    public static func resetLine(_ date: Date?, now: Date = Date(), calendar: Calendar = .current, locale: Locale = .current) -> String {
+        guard let date else { return "重置时间未知" }
+        let formatter = DateFormatter()
+        formatter.locale = locale
+        formatter.calendar = calendar
+        formatter.timeZone = calendar.timeZone
+        formatter.dateFormat = calendar.isDate(date, inSameDayAs: now) ? "今天 HH:mm" : "M月d日 HH:mm"
+        let moment = formatter.string(from: date)
+        guard let left = text(to: date, now: now) else { return "已到重置时间 · " + moment }
+        return left + "后重置 · " + moment
+    }
+    /// Short form for tight rows: "5天19时后重置", or a plain state when there is no countdown.
+    public static func short(_ date: Date?, now: Date = Date()) -> String {
+        guard let date else { return "重置时间未知" }
+        return text(to: date, now: now).map { $0 + "后重置" } ?? "已到重置时间"
+    }
+}
+
 /// Compact relative timestamps used by the App cards, exactly as the spec writes them:
 /// `今天 20:36` / `明天 20:36` / `5天后 20:10` / `9月19日 20:10`. The App is Chinese-only, so the
 /// date part uses the literal `M月d日` pattern (`Md`-templates render as `9/19` in zh_CN).

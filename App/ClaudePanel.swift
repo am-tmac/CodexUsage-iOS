@@ -275,7 +275,7 @@ struct ClaudePanel: View {
     @State private var message: String?
     var body: some View {
         AppCard(title: "Claude · Claude 账号登录", caption: "Claude Code 的 OAuth 客户端 · 非官方兼容方式",
-                systemImage: "sparkle", palette: palette) {
+                systemImage: "sparkle", palette: palette, mark: AnyView(BrandMark(brand: .claude, palette: palette))) {
             VStack(alignment: .leading, spacing: 12) {
                 // Said plainly and up front: this is a compatibility mechanism, not an approval.
                 Text("Anthropic 不授权第三方 App 提供 Claude.ai 登录，也不授权收集、存储或转交 Claude.ai 会话令牌。此面板用 Claude Code 自己的 OAuth 客户端登录（与你本机 CLIProxyAPI 用的是同一机制），只读取订阅用量；它是兼容做法，可能随时被更改或封禁，随时可能失效。App 不会接收你的密码。")
@@ -342,29 +342,35 @@ struct ClaudePanel: View {
 
 struct ClaudeAccountCard: View {
     let snapshot: ClaudeSnapshot?
+    @Binding var expanded: Bool
     let palette: AppPalette
     let onRefresh: () -> Void
+    let onReauthorize: () -> Void
+    let onRemove: () -> Void
     let busy: Bool
-    var body: some View {
-        AppCard(title: "Claude", caption: "Claude 订阅额度 · Claude Code OAuth 兼容方式", systemImage: "sparkle", palette: palette,
-                menu: AnyView(Button("刷新 Claude 用量", action: onRefresh).disabled(busy))) {
-            VStack(alignment: .leading, spacing: 9) {
-                row("5 小时", snapshot?.fiveHour)
-                row("7 天", snapshot?.sevenDay)
-                Text("更新：" + (snapshot.map { RelativeTime.stamp($0.updatedAt) + ($0.isStale() ? " · 已过期" : "") } ?? "—"))
-                    .font(.footnote).foregroundStyle(palette.secondary)
-            }
-        }
+    var summary: QuotaSummary.Window? {
+        QuotaSummary.tightest([.init(label: "5 小时", remaining: snapshot?.fiveHour?.remaining, reset: snapshot?.fiveHour?.reset),
+                               .init(label: "7 天", remaining: snapshot?.sevenDay?.remaining, reset: snapshot?.sevenDay?.reset)])
     }
-    private func row(_ title: String, _ window: ClaudeWindow?) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text(title).foregroundStyle(palette.secondary)
-                Spacer()
-                Text(window?.remaining.map { "\(Int($0.rounded()))%" } ?? "—").foregroundStyle(palette.primary)
-            }.font(.subheadline).monospacedDigit()
-            DashMeter(remainingPercent: window?.remaining, palette: palette)
-            Text(ResetTimestamp.text(window?.reset)).font(.caption).foregroundStyle(palette.secondary)
+    var body: some View {
+        AppCard(title: "Claude", caption: "订阅额度 · 非官方 OAuth 兼容", systemImage: "sparkle", palette: palette,
+                expanded: $expanded,
+                menu: AnyView(CardMenu(palette: palette) {
+                    Button("刷新 Claude 用量", action: onRefresh).disabled(busy)
+                    Button("重新授权", action: onReauthorize)
+                    Button("移除 Claude 授权", role: .destructive, action: onRemove)
+                }),
+                mark: AnyView(BrandMark(brand: .claude, palette: palette))) {
+            if expanded {
+                VStack(alignment: .leading, spacing: 10) {
+                    QuotaRow(label: "5 小时", remaining: snapshot?.fiveHour?.remaining, reset: snapshot?.fiveHour?.reset, brand: .claude, palette: palette)
+                    QuotaRow(label: "7 天", remaining: snapshot?.sevenDay?.remaining, reset: snapshot?.sevenDay?.reset, brand: .claude, palette: palette)
+                    Rectangle().fill(palette.divider).frame(height: 1).padding(.vertical, 4)
+                    AppRow(label: "更新时间", value: snapshot.map { RelativeTime.stamp($0.updatedAt) + ($0.isStale() ? " · 已过期" : "") } ?? "—", palette: palette)
+                }
+            } else {
+                SummaryLine(window: summary, brand: .claude, palette: palette)
+            }
         }
     }
 }

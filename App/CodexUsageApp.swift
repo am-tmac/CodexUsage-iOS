@@ -146,6 +146,19 @@ import WidgetKit
         do { try await UsageService.shared.logout(account: account); reloadAccounts(); message = nil; WidgetCenter.shared.reloadAllTimelines() }
         catch { message = error.localizedDescription }
     }
+    // The card "⋯" menus remove credentials here (build 27 moved these out of the sign-in panels).
+    func removeDeepSeek(_ id: String) async {
+        do { try await DeepSeekService.shared.remove(id); reloadAccounts(); WidgetCenter.shared.reloadAllTimelines() }
+        catch { message = "移除失败，请解锁后重试" }
+    }
+    func removeAntigravity() async {
+        do { try await AntigravityService.shared.remove(); try? DashboardStore.publish(); reloadAccounts(); WidgetCenter.shared.reloadAllTimelines() }
+        catch { message = error.localizedDescription }
+    }
+    func removeClaude() async {
+        do { try await ClaudeService.shared.remove(); try DashboardStore.publish(); reloadAccounts(); WidgetCenter.shared.reloadAllTimelines() }
+        catch { message = (error as? ClaudeFailure)?.localizedDescription ?? "移除失败，请检查本机储存" }
+    }
 }
 
 // MARK: - App appearance
@@ -251,12 +264,15 @@ struct DashMeter: View {
     var palette: AppPalette
     var dashes = 68
     var height: CGFloat = 14
+    /// Per-service colours (build 27); nil keeps the palette's original blue.
+    var litColor: Color? = nil
+    var restColor: Color? = nil
     var lit: Int { guard let remainingPercent else { return 0 }; return min(dashes, max(0, Int((remainingPercent / 100 * Double(dashes)).rounded()))) }
     var body: some View {
         HStack(spacing: 2) {
             ForEach(0..<dashes, id: \.self) { index in
                 RoundedRectangle(cornerRadius: 1.4, style: .continuous)
-                    .fill(index < lit ? palette.meterUsed : palette.meterRest)
+                    .fill(index < lit ? (litColor ?? palette.meterUsed) : (restColor ?? palette.meterRest))
                     .frame(maxWidth: .infinity)
             }
         }
@@ -343,7 +359,7 @@ struct ContentView: View {
     /// Keychain/file-backed sharing state, loaded in `.task` and after each action instead of on
     /// every render (the 设置 body used to hit the keychain several times per redraw).
     @State private var auth = WidgetAuthState()
-    @State private var confirmKeychainRisk = false
+    @State private var connect: ConnectEntry?
     @State private var confirmWidgetRisk = false
     @State private var widgetConsentEnabled = false
     @State private var showFullInWidget = SharedStorage.showFullAccountInWidget
@@ -405,7 +421,6 @@ struct ContentView: View {
         for id in model.accounts {
             cards.append((cardKey("codex", id), AnyView(AccountCard(id: id,
                         title: "Codex",
-                        systemImage: "chevron.left.forwardslash.chevron.right",
                         caption: model.label(for: id),
                         snapshot: model.snapshots[id],
                         expanded: expandedBinding(id),
@@ -413,21 +428,33 @@ struct ContentView: View {
                         palette: palette,
                         onRefresh: { Task { await model.refresh(account: id) } },
                         onSelectWidget: { model.selectWidget(id) },
+                        onReauthorize: { connect = .service(.codex) },
                         onRemove: { Task { await model.logout(account: id) } },
                         slotValue: slotValue(id)))))
         }
-        for (index, id) in model.deepSeekIDs.enumerated() {
-            cards.append((cardKey("deepseek", id), AnyView(DeepSeekAccountCard(index: index, snapshot: model.balances[id], palette: palette,
-                                onRefresh: { Task { await model.refresh() } },
+        for id in model.deepSeekIDs {
+            cards.append((cardKey("deepseek", id), AnyView(DeepSeekAccountCard(snapshot: model.balances[id],
+                                expanded: expandedBinding("deepseek:" + id), palette: palette,
+                                onRefresh: { Task { _ = await model.refreshDeepSeek(id) } },
+                                onUpdateKey: { connect = .service(.deepseek) },
+                                onRemove: { Task { await model.removeDeepSeek(id) } },
                                 busy: model.busy))))
         }
         if model.antigravityInstalled {
-            cards.append((cardKey("antigravity", nil), AnyView(AntigravityCard(snapshot: model.antigravity, palette: palette,
-                            onRefresh: { Task { await model.refresh() } }, busy: model.busy))))
+            cards.append((cardKey("antigravity", nil), AnyView(AntigravityCard(snapshot: model.antigravity,
+                            expanded: expandedBinding("antigravity"), palette: palette,
+                            onRefresh: { Task { await model.refresh() } },
+                            onReauthorize: { connect = .service(.antigravity) },
+                            onRemove: { Task { await model.removeAntigravity() } },
+                            busy: model.busy))))
         }
         if model.claudeInstalled {
-            cards.append((cardKey("claude", ClaudeStore.id), AnyView(ClaudeAccountCard(snapshot: model.claudeSnapshot, palette: palette,
-                            onRefresh: { Task { await model.refresh() } }, busy: model.busy))))
+            cards.append((cardKey("claude", ClaudeStore.id), AnyView(ClaudeAccountCard(snapshot: model.claudeSnapshot,
+                            expanded: expandedBinding("claude"), palette: palette,
+                            onRefresh: { Task { await model.refresh() } },
+                            onReauthorize: { connect = .service(.claude) },
+                            onRemove: { Task { await model.removeClaude() } },
+                            busy: model.busy))))
         }
         let wanted = CardOrder.sorted(cards.map(\.key), by: cardOrderModel.keys)
         return wanted.compactMap { key in cards.first { $0.key == key } }
@@ -470,11 +497,9 @@ struct ContentView: View {
         } message: {
             Text("实测组：\(SharedStorage.diagnostics.observedDefaultGroup ?? "未知")。购买证书下，被授权访问同一组的其他 App 可能读取或修改所有账号令牌；service 名称不提供安全隔离。已有默认令牌可能已在此组。本开关不迁移或复制令牌，只允许组件用精确验证组访问所选账号。关闭保留账号并停止新请求，但无法撤回已经发送的请求或泄露的令牌。iOS 仅接受约每 15 分钟刷新请求，不保证时刻；负一屏出现不能强制联网。")
         }
-        .alert("确认钥匙串安全边界", isPresented: $confirmKeychainRisk) {
-            Button("取消", role: .cancel) {}
-            Button("知悉风险，继续登录") { model.login() }
-        } message: {
-            Text("当前签名默认组：\(SharedStorage.diagnostics.observedDefaultGroup ?? "未知")。购买证书可能让同组其他 App 读取或修改本 App 保存的令牌，private 服务名不能隔离权限。继续只授权在现有默认钥匙串保存本次登录，不授权共享迁移或组件独立刷新。若不接受，请取消；已有令牌的暴露不能被此提示撤销。")
+        .sheet(item: $connect) { entry in
+            ConnectSheet(model: model, entry: entry)
+                .preferredColorScheme(theme == .system ? nil : (theme == .light ? .light : .dark))
         }
         .refreshable { if model.signedIn { await model.refresh() } }
         .task {
@@ -528,13 +553,21 @@ struct ContentView: View {
             Text("Codex 用量").scaledFont(17, weight: .semibold, relativeTo: .headline).foregroundStyle(palette.primary)
             HStack {
                 Spacer()
-                if tab == .status {
+                if tab == .status && model.signedIn {
                     Button(editMode == .active ? "完成" : "排序") {
                         withAnimation { editMode = editMode == .active ? .inactive : .active }
                     }
                     .scaledFont(15, weight: .semibold, relativeTo: .subheadline).foregroundStyle(palette.primary)
                     .padding(.trailing, 4)
                 }
+                if tab == .status {
+                    Button { connect = .picker } label: {
+                        Image(systemName: "plus").font(.system(size: 15, weight: .semibold)).foregroundStyle(palette.primary)
+                            .frame(width: 36, height: 36)
+                            .background(palette.capsule, in: Circle())
+                    }.buttonStyle(.plain).accessibilityLabel("连接账号")
+                }
+                if model.signedIn {
                 Button { Task { await model.refresh() } } label: {
                     Group {
                         if model.busy { ProgressView().tint(palette.primary) }
@@ -543,6 +576,7 @@ struct ContentView: View {
                     .frame(width: 36, height: 36)
                     .background(palette.capsule, in: Circle())
                 }.buttonStyle(.plain).disabled(model.busy || !model.signedIn).accessibilityLabel("刷新额度")
+                }
             }
         }
         .padding(.horizontal, 16)
@@ -577,55 +611,27 @@ struct ContentView: View {
                 .listRowInsets(EdgeInsets(top: 6, leading: 20, bottom: 6, trailing: 20))
         }
         if model.accounts.isEmpty && model.deepSeekIDs.isEmpty && !model.antigravityInstalled && !model.claudeInstalled {
-            VStack(alignment: .leading, spacing: 14) {
-                Image(systemName: "chart.bar.xaxis").scaledFont(42, relativeTo: .largeTitle).foregroundStyle(palette.primary).padding(.top, 24)
-                Text("在 iPhone 上直接查看额度").font(.title2.bold()).foregroundStyle(palette.primary)
-                Text("使用 ChatGPT 设备代码登录，无需 Mac 或代理服务。令牌仅存储在本机钥匙串。此 App 非 OpenAI 官方产品，使用非公开接口，可能随时失效。")
-                    .foregroundStyle(palette.secondary)
-            }.padding(.vertical, 4)
-        }
+            EmptyConnectView(palette: palette) { connect = .picker }
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+                .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+        } else {
         Text("如何添加小组件").scaledFont(15, relativeTo: .subheadline).foregroundStyle(palette.secondary)
             .frame(maxWidth: .infinity, alignment: .center).padding(.top, 2)
+            .listRowBackground(Color.clear).listRowSeparator(.hidden)
         if SharedStorage.cacheSharingAvailable {
             Text("长按桌面组件编辑左右账号").scaledFont(12, relativeTo: .caption).foregroundStyle(palette.tertiary)
                 .frame(maxWidth: .infinity, alignment: .center)
+                .listRowBackground(Color.clear).listRowSeparator(.hidden)
         }
-        loginCard
-        // Claude sign-in belongs next to the ChatGPT (GPT) device-code login on the status page —
-        // it is an account login, not a setting, and hiding it under 设置 made it look absent.
-        ClaudePanel(model: model, palette: palette)
-        footerCard
+        }
+        // Every sign-in (ChatGPT, Claude, DeepSeek, Antigravity) now lives in 连接账号 (the "+"
+        // button); the status page carries account cards only.
     }
     func expandedBinding(_ id: String) -> Binding<Bool> {
         Binding(get: { expanded.contains(id) }, set: { value in
             if value { expanded.insert(id) } else { expanded.remove(id) }
         })
-    }
-    var loginCard: some View {
-        AppCard(title: "ChatGPT 账号", caption: model.signedIn ? "已在本机保存授权" : "尚未登录", systemImage: "person.crop.circle", palette: palette) {
-            VStack(alignment: .leading, spacing: 14) {
-                if let code = model.code {
-                    VStack(alignment: .leading, spacing: 14) {
-                        Text("设备代码（15 分钟有效）").font(.headline).foregroundStyle(palette.primary)
-                        Text(code.userCode).font(.system(.largeTitle, design: .monospaced).bold()).foregroundStyle(palette.primary).textSelection(.enabled)
-                        ShareLink(item: code.userCode) { Label("复制或分享代码", systemImage: "square.and.arrow.up") }
-                        Link("打开 OpenAI 验证页面", destination: AuthAPI.verificationURL).buttonStyle(.borderedProminent)
-                        Text("仅输入你在此 App 主动申请的代码。添加第二个账号时，请在官方验证页面退出或切换到另一个账号，再授权。必要时在 ChatGPT 设置 → 安全中启用设备代码登录。验证后返回此 App 等待完成。").font(.footnote).foregroundStyle(palette.secondary)
-                        ProgressView("等待授权…").tint(palette.primary)
-                    }.padding(14).background(palette.tile, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-                }
-                if model.signingIn { Button("取消登录", role: .cancel) { model.cancelLogin() } }
-                else {
-                    Group {
-                        if #available(iOS 26.0, *) {
-                            Button(model.signedIn ? "添加账号 / 重新授权" : "使用 ChatGPT 登录") { confirmKeychainRisk = true }.buttonStyle(.glassProminent)
-                        } else {
-                            Button(model.signedIn ? "添加账号 / 重新授权" : "使用 ChatGPT 登录") { confirmKeychainRisk = true }.buttonStyle(.borderedProminent).padding(6).background(.regularMaterial, in: Capsule())
-                        }
-                    }.disabled(model.busy)
-                }
-            }
-        }
     }
     var footerCard: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -714,8 +720,7 @@ struct ContentView: View {
                 }.tint(palette.secondary)
             }
         }
-        DeepSeekPanel(model: model)
-        AntigravityPanel(model: model, palette: palette)
+        footerCard
     }
 }
 
@@ -731,12 +736,46 @@ final class CardOrderModel: ObservableObject {
     func set(_ order: [String]) { keys = order; CardOrder.save(order) }
 }
 
-/// One Codex account card: header, weekly row, segmented meter, relative reset and — when
-/// expanded — the label/value table. Only real fields are drawn; anything missing shows —.
+/// The "⋯" menu every account card shares. Destructive and re-auth actions live here now that the
+/// sign-in panels moved into 连接账号.
+struct CardMenu<Items: View>: View {
+    var palette: AppPalette
+    @ViewBuilder var items: Items
+    var body: some View {
+        Menu { items } label: {
+            Image(systemName: "ellipsis").font(.system(size: 15, weight: .semibold)).foregroundStyle(palette.tertiary).frame(width: 28, height: 28)
+        }
+    }
+}
+
+/// One quota window, expanded: label + remaining, the brand-coloured meter, then the countdown and
+/// the absolute reset moment. Missing values stay "—" / "重置时间未知".
+struct QuotaRow: View {
+    let label: String
+    let remaining: Double?
+    let reset: Date?
+    let brand: ServiceBrand
+    var palette: AppPalette
+    @Environment(\.colorScheme) private var scheme
+    var body: some View {
+        let colors = MeterColors(brand: brand, remaining: remaining, palette: palette, dark: scheme == .dark)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(label).scaledFont(15, relativeTo: .subheadline).foregroundStyle(palette.secondary)
+                Spacer(minLength: 8)
+                Text(remaining.map { "\(Int($0.rounded()))%" } ?? "—").scaledFont(16, weight: .semibold, relativeTo: .callout).monospacedDigit().foregroundStyle(palette.primary)
+            }
+            DashMeter(remainingPercent: remaining, palette: palette, litColor: colors.lit, restColor: colors.rest)
+            ResetLine(date: reset, palette: palette).frame(maxWidth: .infinity, alignment: .trailing)
+        }
+    }
+}
+
+/// One Codex account card. Collapsed: header + the tighter of 5 小时 / 每周. Expanded: both windows
+/// with countdowns, then the label/value table. Only real fields are drawn; anything missing shows —.
 struct AccountCard: View {
     let id: String
     let title: String
-    let systemImage: String
     let caption: String
     let snapshot: UsageSnapshot?
     @Binding var expanded: Bool
@@ -744,6 +783,7 @@ struct AccountCard: View {
     var palette: AppPalette
     let onRefresh: () -> Void
     let onSelectWidget: () -> Void
+    let onReauthorize: () -> Void
     let onRemove: () -> Void
     let slotValue: String
     var weekly: UsageWindow? { snapshot?.usage.rateLimit?.secondaryWindow }
@@ -753,36 +793,27 @@ struct AccountCard: View {
         guard let snapshot else { return "—" }
         return RelativeTime.stamp(snapshot.updatedAt) + (snapshot.isStale() ? " · 数据已过期" : "")
     }
+    var summary: QuotaSummary.Window? {
+        QuotaSummary.tightest([.init(label: "5 小时", remaining: session?.remaining, reset: session?.resetDate),
+                               .init(label: "每周", remaining: weekly?.remaining, reset: weekly?.resetDate)])
+    }
     var body: some View {
-        AppCard(title: title, caption: caption, systemImage: systemImage, palette: palette, expanded: $expanded,
-                menu: AnyView(Menu {
+        AppCard(title: title, caption: caption, systemImage: "chevron.left.forwardslash.chevron.right", palette: palette, expanded: $expanded,
+                menu: AnyView(CardMenu(palette: palette) {
                     Button("刷新此账号", action: onRefresh)
                     if canSelectWidget { Button("设为小组件左列账号", action: onSelectWidget) }
+                    Button("添加账号 / 重新授权", action: onReauthorize)
                     Button("移除账号", role: .destructive, action: onRemove)
-                } label: {
-                    Image(systemName: "ellipsis").font(.system(size: 15, weight: .semibold)).foregroundStyle(palette.tertiary).frame(width: 28, height: 28)
                 }),
-                mark: AnyView(Image(systemName: "chevron.left.forwardslash.chevron.right")
-                    .font(.system(size: 17, weight: .bold)).foregroundStyle(palette.primary)),
-                ) {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text("每周").scaledFont(15, relativeTo: .subheadline).foregroundStyle(palette.secondary)
-                    Spacer(minLength: 8)
-                    Text(percent(weekly?.remaining)).scaledFont(16, weight: .semibold, relativeTo: .callout).monospacedDigit().foregroundStyle(palette.primary)
-                }
-                DashMeter(remainingPercent: weekly?.remaining, palette: palette)
-                Text(RelativeTime.text(weekly?.resetDate)).scaledFont(13, relativeTo: .footnote).monospacedDigit().foregroundStyle(palette.secondary)
-                    .frame(maxWidth: .infinity, alignment: .trailing)
-                if expanded {
+                mark: AnyView(BrandMark(brand: .codex, palette: palette))) {
+            if expanded {
+                VStack(alignment: .leading, spacing: 10) {
+                    QuotaRow(label: "5 小时", remaining: session?.remaining, reset: session?.resetDate, brand: .codex, palette: palette)
+                    QuotaRow(label: "每周", remaining: weekly?.remaining, reset: weekly?.resetDate, brand: .codex, palette: palette)
                     Rectangle().fill(palette.divider).frame(height: 1).padding(.vertical, 4)
                     VStack(alignment: .leading, spacing: 0) {
                         AppRow(label: "本机独立授权账号", value: slotValue, palette: palette)
                         if let plan = AccountLabel.plan(snapshot?.usage.planType) { AppRow(label: "套餐", value: plan, palette: palette) }
-                        AppRow(label: "5 小时额度", value: percent(session?.remaining), palette: palette)
-                        AppRow(label: "会话重置", value: RelativeTime.text(session?.resetDate), palette: palette)
-                        AppRow(label: "每周", value: percent(weekly?.remaining), palette: palette)
-                        AppRow(label: "周重置", value: RelativeTime.text(weekly?.resetDate), palette: palette)
                         if let credits {
                             if credits.balance != nil { AppRow(label: "额度", value: Money.text(credits.balance, currency: credits.currency), palette: palette) }
                             if let unlimited = credits.unlimited { AppRow(label: "无限额度", value: unlimited ? "是" : "否", palette: palette) }
@@ -791,84 +822,90 @@ struct AccountCard: View {
                         AppRow(label: "更新时间", value: updated, palette: palette)
                     }
                 }
+            } else {
+                SummaryLine(window: summary, brand: .codex, palette: palette)
             }
         }
     }
-    func percent(_ value: Double?) -> String { value.map { "\(Int($0.rounded()))%" } ?? "—" }
 }
 
-/// One DeepSeek account card: the same card visual, real currency amounts only — a balance has
-/// no denominator, so this card never shows a percentage and never draws the meter.
+/// One DeepSeek account card: real currency amounts only — a balance has no denominator and no
+/// reset, so this card never shows a percentage, a meter or a countdown.
 struct DeepSeekAccountCard: View {
-    let index: Int
     let snapshot: DeepSeekSnapshot?
+    @Binding var expanded: Bool
     var palette: AppPalette
     let onRefresh: () -> Void
+    let onUpdateKey: () -> Void
+    let onRemove: () -> Void
     let busy: Bool
     var info: DeepSeekBalance.BalanceInfo? { snapshot?.balance.balanceInfos.first }
+    var updated: String { snapshot.map { RelativeTime.text($0.updatedAt) + ($0.isStale() ? " · 已过期" : "") } ?? "—" }
     var body: some View {
-        AppCard(title: "DeepSeek", caption: "仅 API 平台余额，不是聊天订阅额度", systemImage: "water.waves", palette: palette,
-                menu: AnyView(Menu {
+        AppCard(title: "DeepSeek", caption: "API 平台余额 · 非聊天订阅", systemImage: "water.waves", palette: palette, expanded: $expanded,
+                menu: AnyView(CardMenu(palette: palette) {
                     Button("刷新此账号", action: onRefresh).disabled(busy)
-                } label: {
-                    Image(systemName: "ellipsis").font(.system(size: 15, weight: .semibold)).foregroundStyle(palette.tertiary).frame(width: 28, height: 28)
+                    Button("更新 Key", action: onUpdateKey)
+                    Button("移除账号", role: .destructive, action: onRemove)
                 }),
-                mark: AnyView(DeepSeekWhale().fill(palette.primary).frame(width: 26, height: 17)),
-                ) {
+                mark: AnyView(BrandMark(brand: .deepseek, palette: palette))) {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(alignment: .firstTextBaseline) {
                     Text("总余额").scaledFont(15, relativeTo: .subheadline).foregroundStyle(palette.secondary)
-                    Spacer(minLength: 8)
                     Text(Money.text(info?.total, currency: info?.currency))
-                        .scaledFont(22, weight: .bold, relativeTo: .title2).monospacedDigit().foregroundStyle(palette.primary)
+                        .scaledFont(expanded ? 22 : 17, weight: .bold, relativeTo: .title2).monospacedDigit().foregroundStyle(palette.primary)
                         .lineLimit(1).minimumScaleFactor(0.5)
+                    Spacer(minLength: 8)
+                    if !expanded {
+                        Text("更新 " + updated).scaledFont(13, relativeTo: .footnote).foregroundStyle(palette.secondary).lineLimit(1)
+                    }
                 }
-                Rectangle().fill(palette.divider).frame(height: 1).padding(.vertical, 4)
-                VStack(alignment: .leading, spacing: 0) {
-                    AppRow(label: "赠送", value: Money.text(info?.granted, currency: info?.currency), palette: palette)
-                    AppRow(label: "充值", value: Money.text(info?.toppedUp, currency: info?.currency), palette: palette)
-                    AppRow(label: "接口状态", value: snapshot == nil ? "暂无余额数据" : (snapshot!.balance.isAvailable ? "API 余额可用" : "API 余额不可用"), palette: palette)
-                    AppRow(label: "更新时间", value: snapshot.map { RelativeTime.text($0.updatedAt) + ($0.isStale() ? " · 已过期" : "") } ?? "—", palette: palette)
+                if expanded {
+                    Rectangle().fill(palette.divider).frame(height: 1).padding(.vertical, 4)
+                    VStack(alignment: .leading, spacing: 0) {
+                        AppRow(label: "赠送", value: Money.text(info?.granted, currency: info?.currency), palette: palette)
+                        AppRow(label: "充值", value: Money.text(info?.toppedUp, currency: info?.currency), palette: palette)
+                        AppRow(label: "接口状态", value: snapshot == nil ? "暂无余额数据" : (snapshot!.balance.isAvailable ? "API 余额可用" : "API 余额不可用"), palette: palette)
+                        AppRow(label: "更新时间", value: updated, palette: palette)
+                    }
                 }
             }
         }
     }
 }
 
-/// Antigravity usage. Collapsed it shows the *pool* view — the two shared pools Antigravity really
-/// meters, each as the tightest row inside it — plus the plan; expanding reveals every model row the
-/// backend reports. Credit rows only appear when the API actually sends credits (Pro/Ultra tiers do
-/// not), so nothing is shown as "—" just to fill a table.
+/// Antigravity usage: one number — the tightest model quota the backend reports — with its meter
+/// and countdown; expanding only adds the plan and update time (no pool or per-model rows).
 struct AntigravityCard: View {
     let snapshot: AntigravitySnapshot?
+    @Binding var expanded: Bool
     var palette: AppPalette
     let onRefresh: () -> Void
+    let onReauthorize: () -> Void
+    let onRemove: () -> Void
     let busy: Bool
+    var summary: QuotaSummary.Window? {
+        QuotaSummary.tightest((snapshot?.usage.quotas ?? []).map { .init(label: "模型额度", remaining: $0.remaining, reset: $0.reset) })
+    }
     var body: some View {
         AppCard(title: "Antigravity", caption: "Google Antigravity 配额与额度",
-                systemImage: "sparkles", palette: palette,
-                menu: AnyView(Menu {
+                systemImage: "sparkles", palette: palette, expanded: $expanded,
+                menu: AnyView(CardMenu(palette: palette) {
                     Button("刷新 Antigravity 用量", action: onRefresh).disabled(busy)
-                } label: {
-                    Image(systemName: "ellipsis").font(.system(size: 15, weight: .semibold)).foregroundStyle(palette.tertiary).frame(width: 28, height: 28)
-                })) {
-            // 用户要求：Antigravity 只显示总用量 —— 不列池、不列模型，因此也没有可展开的明细。
+                    Button("重新授权", action: onReauthorize)
+                    Button("移除 Antigravity 授权", role: .destructive, action: onRemove)
+                }),
+                mark: AnyView(BrandMark(brand: .antigravity, palette: palette))) {
             VStack(alignment: .leading, spacing: 12) {
-                if let tightest = snapshot?.usage.tightestRemaining {
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack(alignment: .firstTextBaseline) {
-                            Text("总用量").scaledFont(15, relativeTo: .subheadline).foregroundStyle(palette.secondary)
-                            Spacer(minLength: 8)
-                            Text("\(Int(tightest.rounded()))%")
-                                .scaledFont(22, weight: .bold, relativeTo: .title2).monospacedDigit().foregroundStyle(palette.primary)
-                        }
-                        DashMeter(remainingPercent: tightest, palette: palette)
+                if expanded {
+                    QuotaRow(label: "模型额度", remaining: summary?.remaining, reset: summary?.reset, brand: .antigravity, palette: palette)
+                    Rectangle().fill(palette.divider).frame(height: 1).padding(.vertical, 4)
+                    VStack(alignment: .leading, spacing: 0) {
+                        AppRow(label: "套餐", value: snapshot?.usage.tier ?? "—", palette: palette)
+                        AppRow(label: "更新时间", value: snapshot.map { RelativeTime.text($0.updatedAt) + ($0.isStale() ? " · 已过期" : "") } ?? "—", palette: palette)
                     }
-                }
-                Rectangle().fill(palette.divider).frame(height: 1).padding(.vertical, 4)
-                VStack(alignment: .leading, spacing: 0) {
-                    AppRow(label: "套餐", value: snapshot?.usage.tier ?? "—", palette: palette)
-                    AppRow(label: "更新时间", value: snapshot.map { RelativeTime.text($0.updatedAt) + ($0.isStale() ? " · 已过期" : "") } ?? "—", palette: palette)
+                } else {
+                    SummaryLine(window: summary, brand: .antigravity, palette: palette)
                 }
             }
         }
