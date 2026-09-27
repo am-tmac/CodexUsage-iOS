@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Package private-ID unsigned build 28, rejecting stale or signed payloads.
+"""Package private-ID unsigned build 29, rejecting stale or signed payloads.
+
+Build 29: DeepSeek widget depth only — the black base is a bell (rounded dome flaring out to the
+widget edge at 20pt) lit charcoal-to-black with a top hairline; front cards cast soft shadows onto
+the ones behind. No data, refresh or App changes.
 
 Build 28: Claude keeps its access token until 5 min before expiry (like CLIProxyAPI) so the refresh
 token rotates a few times a day instead of on every refresh; only the App rotates. All providers
@@ -33,7 +37,7 @@ import subprocess
 import zipfile
 
 root = Path(__file__).resolve().parents[1]
-app = root / 'Build28Direct/Build/Products/Release-iphoneos/CodexUsage.app'
+app = root / 'Build29Direct/Build/Products/Release-iphoneos/CodexUsage.app'
 appex = app / 'PlugIns/CodexUsageWidget.appex'
 # Private identifiers come from the untracked Configuration/Private.xcconfig, never from this file.
 private = {}
@@ -48,7 +52,7 @@ for bundle, bundle_id in zip((app, appex), ids):
     assert not (bundle / '_CodeSignature').exists(), bundle
     assert not (bundle / 'embedded.mobileprovision').exists(), bundle
     info = plistlib.loads((bundle / 'Info.plist').read_bytes())
-    assert (info['CFBundleIdentifier'], info['CFBundleVersion'], info['CFBundleShortVersionString'], info['MinimumOSVersion']) == (bundle_id, '28', '2.0', '17.0'), info
+    assert (info['CFBundleIdentifier'], info['CFBundleVersion'], info['CFBundleShortVersionString'], info['MinimumOSVersion']) == (bundle_id, '29', '2.0', '17.0'), info
     assert '$(' not in str(info)
     executable = bundle / info['CFBundleExecutable']
     assert 'arm64' in subprocess.check_output(['lipo', '-archs', str(executable)], text=True)
@@ -101,7 +105,7 @@ for logo in ['LogoOpenAI', 'LogoClaude', 'LogoDeepSeek', 'LogoAntigravity']:
 for gone in ['连接 Claude 账号', '登录页面由网站提供', '已阻止非 Claude 或已知登录提供商']:
     assert gone.encode() not in app_binary, gone
 
-out = root / 'Dist/CodexUsage-widget-build28-unsigned.ipa'
+out = root / 'Dist/CodexUsage-widget-build29-unsigned.ipa'
 out.parent.mkdir(exist_ok=True)
 with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as archive:
     for path in app.rglob('*'):
@@ -111,7 +115,7 @@ with zipfile.ZipFile(out) as archive:
     assert archive.testzip() is None
     for suffix, bundle_id in (('', ids[0]), ('PlugIns/CodexUsageWidget.appex/', ids[1])):
         info = plistlib.loads(archive.read('Payload/CodexUsage.app/' + suffix + 'Info.plist'))
-        assert (info['CFBundleIdentifier'], info['CFBundleVersion'], info['CFBundleShortVersionString']) == (bundle_id, '28', '2.0')
+        assert (info['CFBundleIdentifier'], info['CFBundleVersion'], info['CFBundleShortVersionString']) == (bundle_id, '29', '2.0')
 print(out)
 print('sha256:', hashlib.sha256(out.read_bytes()).hexdigest())
-print('bundle IDs:', *ids, 'version: 2.0 (28)')
+print('bundle IDs:', *ids, 'version: 2.0 (29)')

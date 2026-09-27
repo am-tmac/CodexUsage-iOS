@@ -41,6 +41,22 @@ class DashboardContract(unittest.TestCase):
         # 组件永不引入 Charts。
         self.assertNotIn('import Charts', (R/'Widget/CodexUsageWidget.swift').read_text())
         storage = (R/'Shared/Storage.swift').read_text()
+    def test_deepseek_wallet_depth(self):
+        # build 29 (approved mockup "更早"): the black base is a bell — a rounded dome over the card
+        # column whose sides flare out to the widget edge at ~20pt, lit from above with a top-only
+        # hairline; the front cards cast shadows up onto the ones behind; back cards run down behind
+        # the front card's rounded corners so no square shoulders show.
+        views = (R/'Shared/UsageViews.swift').read_text()
+        card = views[views.index('struct DeepSeekStackedCardView'):]
+        card = card[:card.index('\n}\n') + 3]
+        self.assertIn('struct DeepSeekPocketShape: Shape', views)
+        self.assertIn('DeepSeekPocketShape(inset: Self.cardInset, corner: 18, flareDrop: 20)', card)
+        self.assertIn('.stroke(Self.rimLight', card)
+        self.assertEqual(card.count('.shadow(color: .black'), 2)
+        self.assertIn('static let purpleHeight: CGFloat = 52', card)
+        self.assertIn('static let paperHeight: CGFloat = 58', card)
+        self.assertNotIn('topLeadingRadius: 25', card)          # the old inset dome is gone
+        storage = (R/'Shared/Storage.swift').read_text()
         self.assertIn('try DashboardStore.publish()', storage)
         self.assertIn('recoverDisplayIdentity', storage)
 if __name__ == '__main__': unittest.main()

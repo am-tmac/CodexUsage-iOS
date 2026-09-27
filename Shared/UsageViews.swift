@@ -263,6 +263,33 @@ struct DeepSeekWhale: Shape {
     }
 }
 
+/// The DeepSeek wallet's black base (build 29): a rounded dome over the card column whose sides
+/// flare back out (concave) to the widget edge `flareDrop` below the top, so the lower body spans
+/// the full width like a wallet pocket. The convex corner and the concave flare meet with a
+/// vertical tangent on the card column, so the outline has no kink.
+struct DeepSeekPocketShape: Shape {
+    var inset: CGFloat
+    var corner: CGFloat
+    var flareDrop: CGFloat
+    func path(in r: CGRect) -> Path {
+        let l = r.minX + inset, rr = r.maxX - inset, t = r.minY
+        let flareY = t + flareDrop
+        let joint = min(t + corner * 0.9, flareY - 4)
+        let run = flareY - joint
+        var p = Path()
+        p.move(to: CGPoint(x: r.minX, y: r.maxY))
+        p.addLine(to: CGPoint(x: r.minX, y: flareY))
+        p.addCurve(to: CGPoint(x: l, y: joint), control1: CGPoint(x: r.minX + inset * 0.6, y: flareY), control2: CGPoint(x: l, y: joint + run * 0.6))
+        p.addCurve(to: CGPoint(x: l + corner, y: t), control1: CGPoint(x: l, y: t + (joint - t) * 0.4), control2: CGPoint(x: l + corner * 0.35, y: t))
+        p.addLine(to: CGPoint(x: rr - corner, y: t))
+        p.addCurve(to: CGPoint(x: rr, y: joint), control1: CGPoint(x: rr - corner * 0.35, y: t), control2: CGPoint(x: rr, y: t + (joint - t) * 0.4))
+        p.addCurve(to: CGPoint(x: r.maxX, y: flareY), control1: CGPoint(x: rr, y: joint + run * 0.6), control2: CGPoint(x: r.maxX - inset * 0.6, y: flareY))
+        p.addLine(to: CGPoint(x: r.maxX, y: r.maxY))
+        p.closeSubpath()
+        return p
+    }
+}
+
 /// `.systemSmall` DeepSeek card: a three-layer wallet-style stack.
 ///
 /// Layer order is the whole design — the purple card is drawn *behind* the near-white card and
@@ -292,6 +319,28 @@ struct DeepSeekStackedCardView: View {
                                .init(color: surface, location: 1)],
                        startPoint: .top, endPoint: .bottom)
     }
+    /// build 29: the base card itself is lit from above — charcoal at the dome, black by the
+    /// amount — so it reads as a raised card instead of a hole in the widget.
+    static var baseGradient: LinearGradient {
+        LinearGradient(stops: [.init(color: Color(red: 0.16, green: 0.16, blue: 0.175), location: 0),
+                               .init(color: Color(red: 0.055, green: 0.055, blue: 0.064), location: 0.45),
+                               .init(color: surface, location: 1)],
+                       startPoint: .top, endPoint: .bottom)
+    }
+    /// Hairline on the base's top contour only; masked off before the flare so no light line runs
+    /// down the sides.
+    static var rimLight: LinearGradient {
+        LinearGradient(colors: [Color(white: 1, opacity: 0.54), Color(white: 1, opacity: 0.11), .clear],
+                       startPoint: .top, endPoint: UnitPoint(x: 0.5, y: 0.3))
+    }
+    static let logoTint = Color(white: 0.72)
+    /// Each coloured card: a soft darkening toward its tucked-in bottom and a light top edge.
+    static func cardSurface(_ colour: Color) -> some View {
+        let shape = UnevenRoundedRectangle(topLeadingRadius: 14, bottomLeadingRadius: 0, bottomTrailingRadius: 0, topTrailingRadius: 14)
+        return shape.fill(colour)
+            .overlay(shape.fill(LinearGradient(colors: [.clear, Color(white: 0, opacity: 0.10)], startPoint: .top, endPoint: .bottom)))
+            .overlay(shape.strokeBorder(LinearGradient(colors: [Color(white: 1, opacity: 0.43), .clear], startPoint: .top, endPoint: UnitPoint(x: 0.5, y: 0.25)), lineWidth: 0.8))
+    }
     static let muted = Color(white: 0.60)
     static let onPaper = Color(red: 0.145, green: 0.145, blue: 0.153)
     var info: DeepSeekBalance.BalanceInfo? { snapshot?.balance.balanceInfos.first }
@@ -303,9 +352,9 @@ struct DeepSeekStackedCardView: View {
     /// correction: 紫卡凸出来 was wrong — one wallet stack, not a stepped one).
     static let paperInset: CGFloat = 8.5
     static let purpleTop: CGFloat = 10
-    static let purpleHeight: CGFloat = 38
+    static let purpleHeight: CGFloat = 52
     static let paperTop: CGFloat = 45
-    static let paperHeight: CGFloat = 40
+    static let paperHeight: CGFloat = 58
     static let baseTop: CGFloat = 76
     /// All three cards share one text column: in the reference 赠送 / 充值 / 总余额 and the amount
     /// all start at the same x, ~15pt in from the widget edge, so each band's inner inset cancels
@@ -318,21 +367,20 @@ struct DeepSeekStackedCardView: View {
         ZStack(alignment: .top) {
             band(title: "赠送", value: Money.text(info?.granted, currency: info?.currency), foreground: Color(white: 1), inset: Self.purpleTextInset)
                 .frame(height: Self.purpleHeight, alignment: .top).padding(.top, 6)
-                .background(Self.purple, in: UnevenRoundedRectangle(topLeadingRadius: 14, bottomLeadingRadius: 0, bottomTrailingRadius: 0, topTrailingRadius: 14))
+                .background(Self.cardSurface(Self.purple))
                 .padding(.horizontal, Self.cardInset)
                 .padding(.top, Self.purpleTop)
             band(title: "充值", value: Money.text(info?.toppedUp, currency: info?.currency), foreground: Self.onPaper, inset: Self.paperTextInset)
                 .frame(height: Self.paperHeight, alignment: .top).padding(.top, 7)
-                // Square bottom corners: the near-white card plugs straight into the black base
-                // (only the black card's own rounded top corners cut into it).
-                .background(Self.paper, in: UnevenRoundedRectangle(topLeadingRadius: 14, bottomLeadingRadius: 0, bottomTrailingRadius: 0, topTrailingRadius: 14))
+                // Runs down behind the black base; casts a soft shadow up onto the purple card.
+                .background(Self.cardSurface(Self.paper).shadow(color: .black.opacity(0.36), radius: 3.5, y: -1.5))
                 .padding(.horizontal, Self.paperInset)
                 .padding(.top, Self.paperTop)
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 5) {
-                    DeepSeekWhale().fill(Self.muted).frame(width: 18, height: 13.3)
+                    DeepSeekWhale().fill(Self.logoTint).frame(width: 18, height: 13.3)
                     Text("DeepSeek").font(.system(size: 13, weight: .bold))
-                }.foregroundStyle(Self.muted).frame(maxWidth: .infinity, alignment: .center).padding(.top, 7)
+                }.foregroundStyle(Self.logoTint).frame(maxWidth: .infinity, alignment: .center).padding(.top, 7)
                 Spacer(minLength: 2)
                 Text("总余额").font(.system(size: 10)).foregroundStyle(Self.muted)
                 Text(Money.text(info?.total, currency: info?.currency))
@@ -345,8 +393,15 @@ struct DeepSeekStackedCardView: View {
             }
             .padding(.horizontal, Self.baseTextInset).padding(.bottom, 11)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .background(Self.surfaceGradient, in: UnevenRoundedRectangle(topLeadingRadius: 25, bottomLeadingRadius: 0, bottomTrailingRadius: 0, topTrailingRadius: 25))
+            // Text keeps the card column; only the black shape widens to the widget edge.
             .padding(.horizontal, Self.cardInset)
+            .background {
+                let pocket = DeepSeekPocketShape(inset: Self.cardInset, corner: 18, flareDrop: 20)
+                pocket.fill(Self.baseGradient)
+                    .overlay(pocket.stroke(Self.rimLight, lineWidth: 0.75)
+                        .mask(LinearGradient(colors: [.white, .clear], startPoint: .top, endPoint: UnitPoint(x: 0.5, y: 0.2))))
+                    .shadow(color: .black.opacity(0.45), radius: 4, y: -2)
+            }
             .padding(.top, Self.baseTop)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
