@@ -5,5 +5,5 @@
 - 先修改并运行定位契约，在旧 38pt 实现上失败（`Logs/build24-red.log`），然后修改实现；`python3 Tests/widget_refresh_contract.py -v` 17 项通过（`Logs/build24-contract.log`）。
 - ad-hoc 签名模拟器全量测试 67 项、0 失败（`Logs/build24-e2e.log`）；Release iphoneos 未签名构建成功（`Logs/build24-device.log`）。
 - `swift test` 41 项中 40 通过、1 项仍因已有的 `storage("锁文件不可用")` 失败（`Logs/build24-swifttest.log`）。
-- `Scripts/package_widget_build24.py` 校验 private bundle ID、版本、组配置、arm64、无签名及旧功能标记（`Logs/build24-package.log`）。另用 `shasum`、ZIP 解包复核：两 bundle 分别是 `com.example.codexusage` 与 `com.example.codexusage.Widget`，均为 `2.0 (24)`；无签名目录及 embedded profile。
+- `Scripts/package_widget_build24.py` 校验 private bundle ID、版本、组配置、arm64、无签名及旧功能标记（`Logs/build24-package.log`）。另用 `shasum`、ZIP 解包复核：两 bundle 分别是私有主 App ID 与其 `.Widget` 扩展（取自 `Configuration/Private.xcconfig`），均为 `2.0 (24)`；无签名目录及 embedded profile。
 - 局限：代码尺寸和模拟器测试不是重签真机的像素/触摸验收。小组件位置、组件内网络刷新以及真实 Claude OAuth 登录仍需在用户真机测试。

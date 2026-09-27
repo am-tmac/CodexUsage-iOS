@@ -110,7 +110,7 @@ xcodebuild -project CodexUsage.xcodeproj -scheme CodexUsage \
 - build 23：Codex 的刷新控件移到组件整体右上角；DeepSeek 按钮曾上移过多，build 24 已修正。
 - build 22：把组件刷新授权的严格握手与经风险确认的手动授权分开；配置的 Keychain 组不代表真实 entitlement，只使用本机实测的精确组。Claude 登录移到状态页 ChatGPT 登录下方。
 - build 21：已授权时是组件内 AppIntent 真刷新；未授权时为不同外观的「打开 App」控件，不把打开 App 伪装成刷新。Claude 改为 OAuth 账号登录；删除旧的 WebKit 会话和手动 sessionKey 路径。
-- 旧版 IPA、打包脚本与验证日志均已清理。当前构建请用 `Scripts/package_widget_build26.py`（Release 构建需 `-xcconfig Configuration/Private.xcconfig`），目标输出目录为 `Build25Direct`；重建前先运行静态契约、模拟器测试与 iphoneos Release 构建。详情见 `VERIFICATION-build25.md`。
+- 旧版 IPA、打包脚本与验证日志均已清理。当前构建请用 `Scripts/package_widget_build28.py`（Release 构建需 `-xcconfig Configuration/Private.xcconfig`），目标输出目录为 `Build28Direct`；私有 ID 只从 `Private.xcconfig` 读取；重建前先运行静态契约、模拟器测试与 iphoneos Release 构建。详情见 `VERIFICATION-build25.md`。
 
 ## 当前版本
 
