@@ -73,33 +73,81 @@ import WidgetKit
     @Published var signedIn = (try? SharedStorage.credentials()) != nil
     private var loginTask: Task<Void, Never>?
     private var generation = UUID()
-    func refresh(account: String? = nil) async {
-        guard !busy else { return }
+    /// True only while a refresh the user asked for (button / pull) is running; automatic refreshes
+    /// on launch and foreground update the cards silently instead of spinning the title bar.
+    @Published var spinning = false
+    /// When the last full refresh finished; automatic refreshes within `autoRefreshInterval` are skipped.
+    private var lastFullRefresh: Date?
+    static let autoRefreshInterval: TimeInterval = 60
+    /// Launch / foreground: show the cache at once and refresh in the background only when the
+    /// last refresh is older than a minute.
+    func autoRefresh() async {
+        if let lastFullRefresh, Date().timeIntervalSince(lastFullRefresh) < Self.autoRefreshInterval { return }
+        await refresh(userInitiated: false)
+    }
+    /// Every provider and account is fetched concurrently (build 28): the refresh now takes as long
+    /// as the slowest service instead of the sum of all of them. Each result lands on its card as
+    /// soon as it arrives; a failure keeps that card's cache.
+    func refresh(account: String? = nil, userInitiated: Bool = true) async {
+        // A tap during a silent refresh just shows the spinner until that refresh lands.
+        guard !busy else { if userInitiated { spinning = true }; return }
         busy = true
-        defer { busy = false }
+        if userInitiated { spinning = true }
+        // Ask iOS for time to finish if the App is backgrounded mid-refresh, so a token exchange
+        // the server has already answered is written to the keychain instead of being lost.
+        let background = UIApplication.shared.beginBackgroundTask(withName: "CodexUsage.refresh")
+        defer {
+            busy = false; spinning = false
+            if background != .invalid { UIApplication.shared.endBackgroundTask(background) }
+        }
         message = nil
-        for id in account.map({ [$0] }) ?? accounts {
-            do { snapshots[id] = try await UsageService.shared.refresh(account: id) }
-            catch is CancellationError { return }
-            catch { message = error.localizedDescription }
+        enum Result { case codex(String, UsageSnapshot), deepSeek(String, DeepSeekSnapshot), antigravity(AntigravitySnapshot),
+                      claude(ClaudeSnapshot), failed(String), cancelled }
+        let codexIDs = account.map { [$0] } ?? accounts
+        let full = account == nil
+        let deepSeek = full ? deepSeekIDs : []
+        let withAntigravity = full && antigravityInstalled, withClaude = full && claudeInstalled
+        await withTaskGroup(of: Result.self) { group in
+            for id in codexIDs {
+                group.addTask {
+                    do { return .codex(id, try await UsageService.shared.refresh(account: id)) }
+                    catch is CancellationError { return .cancelled }
+                    catch { return .failed(error.localizedDescription) }
+                }
+            }
+            for id in deepSeek {
+                group.addTask {
+                    do { return .deepSeek(id, try await DeepSeekService.shared.refresh(id: id, widget: false)) }
+                    catch is CancellationError { return .cancelled }
+                    catch { return .failed(error.localizedDescription) }
+                }
+            }
+            if withAntigravity {
+                group.addTask {
+                    do { return .antigravity(try await AntigravityService.shared.refresh(widget: false)) }
+                    catch is CancellationError { return .cancelled }
+                    catch { return .failed(error.localizedDescription) }
+                }
+            }
+            if withClaude {
+                group.addTask {
+                    do { return .claude(try await ClaudeService.shared.refresh(widget: false)) }
+                    catch is CancellationError { return .cancelled }
+                    catch { return .failed((error as? ClaudeFailure)?.localizedDescription ?? "Claude 刷新失败，保留缓存") }
+                }
+            }
+            for await result in group {
+                switch result {
+                case let .codex(id, value): snapshots[id] = value
+                case let .deepSeek(id, value): balances[id] = value
+                case let .antigravity(value): antigravity = value
+                case let .claude(value): claudeSnapshot = value
+                case let .failed(text): message = text
+                case .cancelled: break
+                }
+            }
         }
-        if account == nil {
-            for id in deepSeekIDs {
-                do { balances[id] = try await DeepSeekService.shared.refresh(id: id, widget: false) }
-                catch is CancellationError { return }
-                catch { message = error.localizedDescription }
-            }
-            if antigravityInstalled {
-                do { antigravity = try await AntigravityService.shared.refresh(widget: false) }
-                catch is CancellationError { return }
-                catch { message = error.localizedDescription }
-            }
-            if claudeInstalled {
-                do { claudeSnapshot = try await ClaudeService.shared.refresh(widget: false) }
-                catch is CancellationError { return }
-                catch { message = (error as? ClaudeFailure)?.localizedDescription ?? "Claude 刷新失败，保留缓存" }
-            }
-        }
+        if full { lastFullRefresh = Date() }
         WidgetCenter.shared.reloadAllTimelines()
     }
     /// Refreshes one DeepSeek account (the 设置 panel's per-account button). Shares `busy` with the
@@ -267,7 +315,9 @@ struct DashMeter: View {
     /// Per-service colours (build 27); nil keeps the palette's original blue.
     var litColor: Color? = nil
     var restColor: Color? = nil
-    var lit: Int { guard let remainingPercent else { return 0 }; return min(dashes, max(0, Int((remainingPercent / 100 * Double(dashes)).rounded()))) }
+    /// 设置 › 用量显示: light the remaining share (default) or the used share.
+    var display: UsageDisplay = .remaining
+    var lit: Int { guard let shown = display.shown(remainingPercent) else { return 0 }; return min(dashes, max(0, Int((shown / 100 * Double(dashes)).rounded()))) }
     var body: some View {
         HStack(spacing: 2) {
             ForEach(0..<dashes, id: \.self) { index in
@@ -277,7 +327,7 @@ struct DashMeter: View {
             }
         }
         .frame(height: height)
-        .accessibilityLabel(remainingPercent.map { "剩余 \(Int($0))%" } ?? "暂无额度数据")
+        .accessibilityLabel(display.accessibility(remainingPercent))
     }
 }
 
@@ -364,9 +414,15 @@ struct ContentView: View {
     @State private var widgetConsentEnabled = false
     @State private var showFullInWidget = SharedStorage.showFullAccountInWidget
     @State private var theme = ThemePreference.load()
+    @State private var usageDisplay = UsageDisplay.load()
     @StateObject private var cardOrderModel = CardOrderModel(keys: CardOrder.load())
     @State private var editMode: EditMode = .inactive
     var palette: AppPalette { .resolve(scheme) }
+    func setUsageDisplay(_ value: UsageDisplay) {
+        do { try value.save() } catch { model.message = error.localizedDescription }
+        usageDisplay = UsageDisplay.load()
+        WidgetCenter.shared.reloadAllTimelines()
+    }
     func setTheme(_ value: ThemePreference) {
         do { try value.save() } catch { model.message = error.localizedDescription }
         theme = ThemePreference.load()
@@ -491,6 +547,7 @@ struct ContentView: View {
                 .tag(AppTab.settings)
         }
         .preferredColorScheme(theme == .system ? nil : (theme == .light ? .light : .dark))
+        .environment(\.usageDisplay, usageDisplay)
         .alert("允许独立刷新及共享组风险", isPresented: $confirmWidgetRisk) {
             Button("取消", role: .cancel) {}
             Button("知悉风险，开启独立刷新") { setWidgetConsent(true) }
@@ -505,13 +562,13 @@ struct ContentView: View {
         .task {
             model.reloadAccounts()
             await reloadAuth()
-            if model.signedIn { await model.refresh() }
+            if model.signedIn { await model.autoRefresh() }
         }
         .onOpenURL { url in if url.scheme == "codexusage" && model.signedIn { Task { await model.refresh() } } }
         .onChange(of: scenePhase) { _, phase in
             guard phase == .active else { return }
             Task { await reloadAuth() }
-            if model.signedIn && !model.signingIn { Task { await model.refresh() } }
+            if model.signedIn && !model.signingIn { Task { await model.autoRefresh() } }
         }
         // Accounts added or removed change which rows the widget may refresh.
         .onChange(of: model.accounts) { _, _ in Task { await reloadAuth() } }
@@ -570,12 +627,12 @@ struct ContentView: View {
                 if model.signedIn {
                 Button { Task { await model.refresh() } } label: {
                     Group {
-                        if model.busy { ProgressView().tint(palette.primary) }
+                        if model.spinning { ProgressView().tint(palette.primary) }
                         else { Image(systemName: "arrow.clockwise").font(.system(size: 14, weight: .semibold)).foregroundStyle(palette.primary) }
                     }
                     .frame(width: 36, height: 36)
                     .background(palette.capsule, in: Circle())
-                }.buttonStyle(.plain).disabled(model.busy || !model.signedIn).accessibilityLabel("刷新额度")
+                }.buttonStyle(.plain).disabled(model.spinning || !model.signedIn).accessibilityLabel("刷新额度")
                 }
             }
         }
@@ -694,6 +751,22 @@ struct ContentView: View {
                     ForEach(ThemePreference.allCases, id: \.self) { value in Text(value.displayName).tag(value) }
                 }.pickerStyle(.segmented)
                 Text(theme == .system ? "跟随系统：App 与小组件随 iOS 外观切换。" : "已固定为\(theme.displayName)：App 与小组件使用同一套配色，不随系统切换。").font(.footnote).foregroundStyle(palette.secondary)
+                Divider().overlay(palette.divider)
+                HStack {
+                    Text("用量显示").scaledFont(15, relativeTo: .subheadline).foregroundStyle(palette.primary)
+                    Spacer(minLength: 12)
+                    Menu {
+                        Picker("用量显示", selection: Binding(get: { usageDisplay }, set: { setUsageDisplay($0) })) {
+                            ForEach(UsageDisplay.allCases, id: \.self) { value in Text(value.displayName).tag(value) }
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text(usageDisplay.displayName)
+                            Image(systemName: "chevron.up.chevron.down").font(.system(size: 11, weight: .semibold))
+                        }.scaledFont(15, relativeTo: .subheadline).foregroundStyle(palette.secondary)
+                    }.accessibilityLabel("用量显示：\(usageDisplay.displayName)")
+                }
+                Text("百分比和用量条显示剩余还是已用；App 与小组件同步。剩余不足 20% 时仍会变红。").font(.footnote).foregroundStyle(palette.secondary)
             }
         }
         AppCard(title: "隐私", caption: "邮箱遮蔽与共享容器", systemImage: "lock", palette: palette) {
@@ -757,15 +830,16 @@ struct QuotaRow: View {
     let brand: ServiceBrand
     var palette: AppPalette
     @Environment(\.colorScheme) private var scheme
+    @Environment(\.usageDisplay) private var display
     var body: some View {
         let colors = MeterColors(brand: brand, remaining: remaining, palette: palette, dark: scheme == .dark)
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline) {
                 Text(label).scaledFont(15, relativeTo: .subheadline).foregroundStyle(palette.secondary)
                 Spacer(minLength: 8)
-                Text(remaining.map { "\(Int($0.rounded()))%" } ?? "—").scaledFont(16, weight: .semibold, relativeTo: .callout).monospacedDigit().foregroundStyle(palette.primary)
+                Text(display.text(remaining)).scaledFont(16, weight: .semibold, relativeTo: .callout).monospacedDigit().foregroundStyle(palette.primary)
             }
-            DashMeter(remainingPercent: remaining, palette: palette, litColor: colors.lit, restColor: colors.rest)
+            DashMeter(remainingPercent: remaining, palette: palette, litColor: colors.lit, restColor: colors.rest, display: display)
             ResetLine(date: reset, palette: palette).frame(maxWidth: .infinity, alignment: .trailing)
         }
     }

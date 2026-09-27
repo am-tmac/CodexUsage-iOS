@@ -537,11 +537,14 @@ struct WidgetRefreshAttempt: Codable {
         startedAt = now
         nextAllowed = now.addingTimeInterval(60)
     }
+    /// After a success the next tap may fetch again in 20 s (was 60 s, which made the widget
+    /// button look dead for a minute). Failures still back off from 5 minutes.
+    static let successCooldown: TimeInterval = 20
     mutating func succeed(_ now: Date) {
         startedAt = nil
         completedAt = now
         failures = 0
-        nextAllowed = now.addingTimeInterval(60)
+        nextAllowed = now.addingTimeInterval(Self.successCooldown)
     }
     // Only call while owning the account lease: no live writer can be clobbered.
     mutating func recoverInterrupted(_ now: Date) {

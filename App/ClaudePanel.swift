@@ -253,9 +253,8 @@ final class ClaudeLogin: ObservableObject {
         defer { busy = false; verifier = ""; self.state = "" }   // one exchange per login attempt
         do {
             let tokens = try await ClaudeAPI().exchange(code: code, verifier: verifier, state: state, redirectURI: redirectURI)
-            guard let refresh = tokens.refreshToken else { throw ClaudeFailure.malformed }
-            try await ClaudeService.shared.install(refreshToken: refresh)
-            message = "登录成功，已保存刷新令牌（访问令牌未保存）。"
+            try await ClaudeService.shared.install(tokens: tokens)
+            message = "登录成功，令牌已存入本机钥匙串。"
             NotificationCenter.default.post(name: .claudeSignedIn, object: nil)
         } catch {
             message = (error as? ClaudeFailure)?.localizedDescription ?? "Claude 登录失败，请重试。"
@@ -281,7 +280,7 @@ struct ClaudePanel: View {
                 Text("Anthropic 不授权第三方 App 提供 Claude.ai 登录，也不授权收集、存储或转交 Claude.ai 会话令牌。此面板用 Claude Code 自己的 OAuth 客户端登录（与你本机 CLIProxyAPI 用的是同一机制），只读取订阅用量；它是兼容做法，可能随时被更改或封禁，随时可能失效。App 不会接收你的密码。")
                     .font(.footnote).foregroundStyle(palette.warning)
                 if model.claudeInstalled {
-                    Text("已保存一个刷新令牌（未保存访问令牌）。每次刷新时用它换取短期访问令牌，只调用账号用量接口，不代你发起任何模型请求。若失效，请在下方移除后重新登录。")
+                    Text("已在本机钥匙串保存刷新令牌和当前访问令牌（与 CLIProxyAPI 相同：访问令牌到期前 5 分钟才换新，一天只换几次）。只调用账号用量接口，不代你发起任何模型请求。若失效，请在下方移除后重新登录。")
                         .font(.footnote).foregroundStyle(palette.secondary)
                     HStack(spacing: 12) {
                         Button("立即刷新用量") { Task { await model.refresh() } }.disabled(model.busy)

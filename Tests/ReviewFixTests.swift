@@ -20,7 +20,7 @@ final class ReviewFixTests: XCTestCase {
         XCTAssertEqual(calls, 2)
     }
 
-    func testClaudeWidgetRotationThatCannotBeSavedAbortsBeforeUsingTheNewToken() async throws {
+    func testClaudeRotationThatCannotBeSavedAbortsBeforeUsingTheNewToken() async throws {
         let transport = ScriptedTransport([(#"{"access_token":"fresh-access","refresh_token":"rotated-refresh"}"#, 200),
                                            (#"{"five_hour":{"utilization":10},"seven_day":{"utilization":20}}"#, 200)])
         var saved: [String] = []
@@ -30,7 +30,7 @@ final class ReviewFixTests: XCTestCase {
         try? FileManager.default.removeItem(at: ClaudeStore.snapshotURL())
         try? FileManager.default.removeItem(at: WidgetRefreshAttempt.url(ClaudeStore.id))
         let service = ClaudeService(api: ClaudeAPI(transport: transport), store: store)
-        do { _ = try await service.refresh(widget: true, permission: { true }); XCTFail("must fail") }
+        do { _ = try await service.refresh(widget: false, permission: { true }); XCTFail("must fail") }
         catch let error as ClaudeFailure { XCTAssertEqual(error, .storage) }
         XCTAssertEqual(saved, ["rotated-refresh", "rotated-refresh"], "one retry, never the old value")
         let requests = await transport.requests
@@ -47,9 +47,96 @@ final class ReviewFixTests: XCTestCase {
             save: { value, _ in saved.append(value.refreshToken) })
         try? FileManager.default.removeItem(at: WidgetRefreshAttempt.url(ClaudeStore.id))
         let snapshot = try await ClaudeService(api: ClaudeAPI(transport: transport), store: store)
-            .refresh(widget: true, permission: { true })
+            .refresh(widget: false, permission: { true })
         XCTAssertEqual(saved, ["rotated-refresh"])
         XCTAssertEqual(snapshot.fiveHour?.remaining, 90)
+    }
+
+    // MARK: - build 28: Claude keeps its access token like CLIProxyAPI (rotate a few times a day)
+
+    private func claudeService(_ transport: ScriptedTransport, credential: ClaudeCredential,
+                               saved: @escaping (ClaudeCredential) -> Void = { _ in }) -> ClaudeService {
+        try? FileManager.default.removeItem(at: WidgetRefreshAttempt.url(ClaudeStore.id))
+        return ClaudeService(api: ClaudeAPI(transport: transport),
+                             store: ClaudeCredentialStore(load: { _ in credential }, save: { value, _ in saved(value) }))
+    }
+    private let usageReply = (#"{"five_hour":{"utilization":10},"seven_day":{"utilization":20}}"#, 200)
+
+    func testValidAccessTokenIsReusedWithoutRotating() async throws {
+        let transport = ScriptedTransport([usageReply])
+        var saves = 0
+        let credential = ClaudeCredential(refreshToken: "r1", obtainedAt: Date(), accessToken: "a1",
+                                          accessExpiresAt: Date().addingTimeInterval(3600))
+        let snapshot = try await claudeService(transport, credential: credential, saved: { _ in saves += 1 })
+            .refresh(widget: false, permission: { true })
+        XCTAssertEqual(snapshot.fiveHour?.remaining, 90)
+        let requests = await transport.requests
+        XCTAssertEqual(requests.count, 1, "usage only — no token exchange")
+        XCTAssertEqual(requests[0].value(forHTTPHeaderField: "Authorization"), "Bearer a1")
+        XCTAssertEqual(saves, 0, "the refresh token is untouched")
+    }
+
+    func testAccessTokenInsideTheFiveMinuteMarginIsRotatedAndSavedWithItsExpiry() async throws {
+        let transport = ScriptedTransport([(#"{"access_token":"a2","refresh_token":"r2","expires_in":28800}"#, 200), usageReply])
+        var saved: [ClaudeCredential] = []
+        let credential = ClaudeCredential(refreshToken: "r1", obtainedAt: Date(), accessToken: "a1",
+                                          accessExpiresAt: Date().addingTimeInterval(120))
+        _ = try await claudeService(transport, credential: credential, saved: { saved.append($0) })
+            .refresh(widget: false, permission: { true })
+        XCTAssertEqual(saved.count, 1)
+        XCTAssertEqual(saved[0].refreshToken, "r2")
+        XCTAssertEqual(saved[0].accessToken, "a2")
+        let left = try XCTUnwrap(saved[0].accessExpiresAt).timeIntervalSinceNow
+        XCTAssertEqual(left, 28800, accuracy: 60)
+        let requests = await transport.requests
+        XCTAssertEqual(requests.last?.value(forHTTPHeaderField: "Authorization"), "Bearer a2")
+    }
+
+    func testLegacyRefreshOnlyRecordDecodesAndRotatesOnce() async throws {
+        let legacy = try JSONDecoder().decode(ClaudeCredential.self,
+                                              from: Data(#"{"refreshToken":"r1","obtainedAt":0}"#.utf8))
+        XCTAssertNil(legacy.usableAccessToken())
+        let transport = ScriptedTransport([(#"{"access_token":"a2","expires_in":28800}"#, 200), usageReply])
+        var saved: [ClaudeCredential] = []
+        _ = try await claudeService(transport, credential: legacy, saved: { saved.append($0) })
+            .refresh(widget: false, permission: { true })
+        XCTAssertEqual(saved.first?.refreshToken, "r1", "no rotated token in the reply keeps the old one")
+        XCTAssertEqual(saved.first?.accessToken, "a2")
+    }
+
+    func testWidgetNeverRotatesAndServesTheCacheWhenTheAccessTokenIsSpent() async throws {
+        let good = ClaudeSnapshot(fiveHour: ClaudeWindow(remaining: 50, reset: nil), sevenDay: nil, updatedAt: Date(timeIntervalSince1970: 1))
+        try ClaudeStore.save(good)
+        let transport = ScriptedTransport([])
+        var saves = 0
+        let expired = ClaudeCredential(refreshToken: "r1", obtainedAt: Date(), accessToken: "a1",
+                                       accessExpiresAt: Date().addingTimeInterval(-10))
+        let value = try await claudeService(transport, credential: expired, saved: { _ in saves += 1 })
+            .refresh(widget: true, permission: { true })
+        XCTAssertEqual(value, good)
+        let requests = await transport.requests
+        XCTAssertEqual(requests.count, 0)
+        XCTAssertEqual(saves, 0)
+    }
+
+    func testWidgetUsesAValidAccessToken() async throws {
+        let transport = ScriptedTransport([usageReply])
+        let credential = ClaudeCredential(refreshToken: "r1", obtainedAt: Date(), accessToken: "a1",
+                                          accessExpiresAt: Date().addingTimeInterval(3600))
+        let value = try await claudeService(transport, credential: credential).refresh(widget: true, permission: { true })
+        XCTAssertEqual(value.sevenDay?.remaining, 80)
+    }
+
+    func testRevokedAccessTokenRotatesOnceInTheApp() async throws {
+        let transport = ScriptedTransport([("{}", 401), (#"{"access_token":"a2","refresh_token":"r2","expires_in":28800}"#, 200), usageReply])
+        var saved: [ClaudeCredential] = []
+        let credential = ClaudeCredential(refreshToken: "r1", obtainedAt: Date(), accessToken: "a1",
+                                          accessExpiresAt: Date().addingTimeInterval(3600))
+        _ = try await claudeService(transport, credential: credential, saved: { saved.append($0) })
+            .refresh(widget: false, permission: { true })
+        XCTAssertEqual(saved.map(\.refreshToken), ["r2"])
+        let requests = await transport.requests
+        XCTAssertEqual(requests.count, 3)
     }
 
     // MARK: - Antigravity must not overwrite a good cache with an error

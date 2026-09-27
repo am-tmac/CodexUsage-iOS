@@ -102,14 +102,21 @@ public protocol HTTPTransport: Sendable {
 }
 public struct URLTransport: HTTPTransport {
     public init() {}
-    public func send(_ request: URLRequest) async throws -> (Data, Int) {
+    /// One session per process (build 28): connections and TLS sessions are reused across requests
+    /// instead of paying a fresh ~1.2 s handshake to chatgpt.com / api.anthropic.com every time.
+    /// Still ephemeral and cookie-less, so nothing persists to disk. A stuck request gives up after
+    /// 10 s (was 20–25 s) so one slow provider cannot hold the whole refresh.
+    static let session: URLSession = {
         let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = 20
-        configuration.timeoutIntervalForResource = 25
+        configuration.timeoutIntervalForRequest = 10
+        configuration.timeoutIntervalForResource = 12
         configuration.httpCookieStorage = nil
-        let session = URLSession(configuration: configuration)
-        defer { session.invalidateAndCancel() }
-        let (data, response) = try await session.data(for: request)
+        configuration.httpShouldSetCookies = false
+        configuration.urlCache = nil
+        return URLSession(configuration: configuration)
+    }()
+    public func send(_ request: URLRequest) async throws -> (Data, Int) {
+        let (data, response) = try await Self.session.data(for: request)
         guard let response = response as? HTTPURLResponse else { throw ServiceError.malformed }
         return (data, response.statusCode)
     }

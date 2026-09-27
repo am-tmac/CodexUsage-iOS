@@ -42,19 +42,16 @@ enum ServiceBrand: String, CaseIterable, Identifiable {
         case .antigravity: return "LogoAntigravity"
         }
     }
-    func meterLit(_ palette: AppPalette, dark: Bool) -> Color {
-        switch self {
-        case .codex, .deepseek: return palette.meterUsed
-        case .claude: return dark ? Color(red: 0.910, green: 0.537, blue: 0.290) : Color(red: 0.851, green: 0.467, blue: 0.169)
-        case .antigravity: return dark ? Color(red: 0.208, green: 0.753, blue: 0.541) : Color(red: 0.122, green: 0.620, blue: 0.431)
-        }
-    }
-    func meterRest(_ palette: AppPalette, dark: Bool) -> Color {
-        switch self {
-        case .codex, .deepseek: return palette.meterRest
-        case .claude: return dark ? Color(red: 0.239, green: 0.165, blue: 0.114) : Color(red: 0.945, green: 0.878, blue: 0.824)
-        case .antigravity: return dark ? Color(red: 0.098, green: 0.227, blue: 0.176) : Color(red: 0.827, green: 0.922, blue: 0.882)
-        }
+    /// The colours live in `MeterTint` (Shared/UsageViews.swift) so the widget uses the same ones.
+    var tint: MeterTint { MeterTint(rawValue: rawValue) ?? .codex }
+}
+
+/// 设置 › 用量显示, read by every card without threading it through each initializer.
+private struct UsageDisplayKey: EnvironmentKey { static let defaultValue: UsageDisplay = .remaining }
+extension EnvironmentValues {
+    var usageDisplay: UsageDisplay {
+        get { self[UsageDisplayKey.self] }
+        set { self[UsageDisplayKey.self] = newValue }
     }
 }
 
@@ -82,13 +79,7 @@ struct MeterColors {
     let lit: Color
     let rest: Color
     init(brand: ServiceBrand, remaining: Double?, palette: AppPalette, dark: Bool) {
-        if QuotaSummary.isLow(remaining) {
-            lit = palette.danger
-            rest = dark ? Color(red: 0.239, green: 0.122, blue: 0.125) : Color(red: 0.965, green: 0.851, blue: 0.851)
-        } else {
-            lit = brand.meterLit(palette, dark: dark)
-            rest = brand.meterRest(palette, dark: dark)
-        }
+        (lit, rest) = brand.tint.colors(remaining: remaining, dark: dark)
     }
 }
 
@@ -99,14 +90,15 @@ struct SummaryLine: View {
     let brand: ServiceBrand
     var palette: AppPalette
     @Environment(\.colorScheme) private var scheme
+    @Environment(\.usageDisplay) private var display
     var body: some View {
         if let window, let remaining = window.remaining {
             let colors = MeterColors(brand: brand, remaining: remaining, palette: palette, dark: scheme == .dark)
             HStack(alignment: .center, spacing: 10) {
                 DashMeter(remainingPercent: remaining, palette: palette, dashes: 22, height: 12,
-                          litColor: colors.lit, restColor: colors.rest)
+                          litColor: colors.lit, restColor: colors.rest, display: display)
                     .frame(width: 110)
-                Text("\(Int(remaining.rounded()))%").scaledFont(17, weight: .bold, relativeTo: .headline)
+                Text(display.text(remaining)).scaledFont(17, weight: .bold, relativeTo: .headline)
                     .monospacedDigit().foregroundStyle(palette.primary).lineLimit(1).fixedSize()
                 Text(window.label).scaledFont(12, relativeTo: .caption).foregroundStyle(palette.secondary)
                     .lineLimit(1).fixedSize()
@@ -203,7 +195,7 @@ struct ConnectSheet: View {
                 Label("已连接 \(count) 个", systemImage: "circle.fill")
                     .labelStyle(ConnectedLabelStyle())
                     .scaledFont(11, weight: .semibold, relativeTo: .caption2)
-                    .foregroundStyle(ServiceBrand.antigravity.meterLit(palette, dark: scheme == .dark))
+                    .foregroundStyle(MeterTint.antigravity.lit(dark: scheme == .dark))
             } else {
                 Text("未连接").scaledFont(11, relativeTo: .caption2).foregroundStyle(palette.tertiary)
             }

@@ -45,23 +45,30 @@ struct RefreshDashboardIntent: AppIntent {
     init(leftID: String?, rightID: String?) { self.leftID = leftID; self.rightID = rightID }
     func perform() async throws -> some IntentResult {
         defer { WidgetCenter.shared.reloadAllTimelines() }
-        for id in RefreshTargets.unique([leftID, rightID]) {
-            guard DashboardStore.canRefreshAnyProvider(id) else { continue }
-            do {
-                if DashboardStore.accounts().first(where: { $0.id == id })?.provider == "deepseek" {
-                    _ = try await DeepSeekService.shared.refresh(id: id)
-                } else if DashboardStore.accounts().first(where: { $0.id == id })?.provider == "claude" {
-                    _ = try await ClaudeService.shared.refresh()
-                } else if DashboardStore.accounts().first(where: { $0.id == id })?.provider == "antigravity" {
-                    _ = try await AntigravityService.shared.refresh()
-                } else {
-                    _ = try await UsageService.shared.refresh(account: id, widget: true, permission: { DashboardStore.canRefresh(id, provider: "codex") })
-                }
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch { /* The last successful cache and the persisted failure flag survive. */ }
+        let targets = RefreshTargets.unique([leftID, rightID]).filter { DashboardStore.canRefreshAnyProvider($0) }
+        let accounts = DashboardStore.accounts()
+        // Both slots at once (build 28): the tap now waits for the slower slot, not the sum.
+        await withTaskGroup(of: Void.self) { group in
+            for id in targets {
+                let provider = accounts.first(where: { $0.id == id })?.provider ?? "codex"
+                group.addTask { _ = try? await WidgetRefresh.one(id: id, provider: provider) }
+            }
         }
+        try Task.checkCancellation()
         return .result()
+    }
+}
+
+/// One slot's refresh, the same for the timeline and the button. The last good cache and the
+/// persisted failure flag survive any error.
+enum WidgetRefresh {
+    static func one(id: String, provider: String) async throws {
+        switch provider {
+        case "deepseek": _ = try await DeepSeekService.shared.refresh(id: id)
+        case "claude": _ = try await ClaudeService.shared.refresh()
+        case "antigravity": _ = try await AntigravityService.shared.refresh()
+        default: _ = try await UsageService.shared.refresh(account: id, widget: true, permission: { DashboardStore.canRefresh(id, provider: "codex") })
+        }
     }
 }
 #endif
@@ -366,33 +373,59 @@ struct DeepSeekStackedCardView: View {
     }
 }
 
-/// The widget uses the same segmented blue remaining-quota meter as the App instead of a
-/// traffic-light capsule. A missing value lights no segment and never invents a percentage.
+/// Per-service meter colours, shared by the App cards and the widget (build 28) so the two can
+/// never drift apart. Codex and DeepSeek keep the original blue; ≤20% left turns danger red.
+enum MeterTint: String {
+    case codex, claude, deepseek, antigravity
+    func lit(dark: Bool) -> Color {
+        switch self {
+        case .codex, .deepseek: return dark ? Color(red: 0.212, green: 0.620, blue: 0.961) : Color(red: 0.129, green: 0.522, blue: 0.929)
+        case .claude: return dark ? Color(red: 0.910, green: 0.537, blue: 0.290) : Color(red: 0.851, green: 0.467, blue: 0.169)
+        case .antigravity: return dark ? Color(red: 0.208, green: 0.753, blue: 0.541) : Color(red: 0.122, green: 0.620, blue: 0.431)
+        }
+    }
+    func rest(dark: Bool) -> Color {
+        switch self {
+        case .codex, .deepseek: return dark ? Color(red: 0.133, green: 0.204, blue: 0.282) : Color(red: 0.851, green: 0.878, blue: 0.918)
+        case .claude: return dark ? Color(red: 0.239, green: 0.165, blue: 0.114) : Color(red: 0.945, green: 0.878, blue: 0.824)
+        case .antigravity: return dark ? Color(red: 0.098, green: 0.227, blue: 0.176) : Color(red: 0.827, green: 0.922, blue: 0.882)
+        }
+    }
+    static func lowLit(dark: Bool) -> Color { dark ? Color(red: 1.0, green: 0.35, blue: 0.32) : Color(red: 0.80, green: 0.16, blue: 0.13) }
+    static func lowRest(dark: Bool) -> Color { dark ? Color(red: 0.239, green: 0.122, blue: 0.125) : Color(red: 0.965, green: 0.851, blue: 0.851) }
+    /// The pair for one reading. The warning is decided on the reported *remaining* share, so
+    /// switching the display to 已用 never changes when a meter turns red.
+    func colors(remaining: Double?, dark: Bool) -> (lit: Color, rest: Color) {
+        if let remaining, remaining <= 20 { return (Self.lowLit(dark: dark), Self.lowRest(dark: dark)) }
+        return (lit(dark: dark), rest(dark: dark))
+    }
+}
+
+/// The widget meter: the same segmented, brand-coloured meter as the App. It lights the share the
+/// 用量显示 setting asks for (剩余 or 已用). A missing value lights no segment and never invents one.
 struct QuotaBar: View {
     let remaining: Double?
+    var tint: MeterTint = .codex
+    var display: UsageDisplay = .remaining
     var height: CGFloat = 6
     var palette: ThemePalette = .dark
     var segments = 28
+    @Environment(\.colorScheme) private var scheme
     private var lit: Int {
-        guard let remaining else { return 0 }
-        return min(segments, max(0, Int((remaining / 100 * Double(segments)).rounded())))
-    }
-    private var active: Color {
-        guard let remaining else { return palette.secondary }
-        if remaining <= 20 { return .red }
-        if remaining <= 40 { return .yellow }
-        return Color(red: 0.212, green: 0.620, blue: 0.961)
+        guard let shown = display.shown(remaining) else { return 0 }
+        return min(segments, max(0, Int((shown / 100 * Double(segments)).rounded())))
     }
     var body: some View {
+        let colors = tint.colors(remaining: remaining, dark: scheme == .dark)
         HStack(spacing: 1) {
             ForEach(0..<segments, id: \.self) { index in
                 RoundedRectangle(cornerRadius: 0.8, style: .continuous)
-                    .fill(index < lit ? active : palette.track)
+                    .fill(index < lit ? colors.lit : colors.rest)
                     .frame(maxWidth: .infinity)
             }
         }
         .frame(height: height)
-        .accessibilityLabel(remaining.map { "剩余 \(Int($0))%" } ?? "暂无额度数据")
+        .accessibilityLabel(display.accessibility(remaining))
     }
 }
 
@@ -403,6 +436,7 @@ struct QuotaBar: View {
 struct AntigravityWidgetView: View {
     let snapshot: AntigravitySnapshot?
     var palette: ThemePalette = .dark
+    var display: UsageDisplay = .remaining
     /// 用户要求：组件里的 Antigravity 也只显示总用量，不列池、不列模型。
     private var total: Double? { snapshot?.usage.tightestRemaining }
     private var totalReset: Date? { (snapshot?.usage.pools ?? []).compactMap(\.reset).min() }
@@ -417,10 +451,10 @@ struct AntigravityWidgetView: View {
                 HStack(alignment: .firstTextBaseline, spacing: 4) {
                     Text("总用量").font(.system(size: 12, weight: .semibold)).foregroundStyle(palette.primary).lineLimit(1).minimumScaleFactor(0.7)
                     Spacer(minLength: 2)
-                    Text(total.map { "\(Int($0.rounded()))%" } ?? "—")
+                    Text(display.text(total))
                         .font(.system(size: 14, weight: .bold)).monospacedDigit().foregroundStyle(palette.primary)
                 }
-                QuotaBar(remaining: total, palette: palette)
+                QuotaBar(remaining: total, tint: .antigravity, display: display, palette: palette)
                 Label(ResetTimestamp.text(totalReset), systemImage: "clock")
                     .font(.system(size: 9)).monospacedDigit().foregroundStyle(palette.secondary)
             }
@@ -444,6 +478,7 @@ struct ClaudeCompactView: View {
     let failed: Bool
     let cacheOnly: Bool
     let palette: ThemePalette
+    var display: UsageDisplay = .remaining
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("Claude").font(.system(size: 19, weight: .bold)).foregroundStyle(palette.primary)
@@ -463,10 +498,10 @@ struct ClaudeCompactView: View {
             HStack {
                 Text(title).font(.system(size: 12, weight: .semibold))
                 Spacer(minLength: 2)
-                Text(window?.remaining.map { "\(Int($0.rounded()))%" } ?? "—")
+                Text(display.text(window?.remaining))
                     .font(.system(size: 14, weight: .bold)).monospacedDigit()
             }.foregroundStyle(palette.primary)
-            QuotaBar(remaining: window?.remaining, palette: palette)
+            QuotaBar(remaining: window?.remaining, tint: .claude, display: display, palette: palette)
             Label(ResetTimestamp.text(window?.reset), systemImage: "clock")
                 .font(.system(size: 9)).monospacedDigit().foregroundStyle(palette.secondary)
                 .lineLimit(1).minimumScaleFactor(0.75)
@@ -481,6 +516,7 @@ struct CompactUsageView: View {
     var sharingUnavailable = false
     var cacheOnly = false
     var palette: ThemePalette = .dark
+    var display: UsageDisplay = .remaining
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("Codex").font(.system(size: 19, weight: .bold)).foregroundStyle(palette.primary).lineLimit(1).minimumScaleFactor(0.7)
@@ -513,10 +549,10 @@ struct CompactUsageView: View {
             HStack(alignment: .firstTextBaseline, spacing: 4) {
                 Text(label).font(.system(size: 12, weight: .semibold)).foregroundStyle(palette.primary)
                 Spacer(minLength: 2)
-                Text(window.map { "\(Int($0.remaining))%" } ?? "—")
+                Text(display.text(window?.remaining))
                     .font(.system(size: 14, weight: .bold)).monospacedDigit().foregroundStyle(palette.primary)
             }
-            QuotaBar(remaining: window?.remaining, palette: palette)
+            QuotaBar(remaining: window?.remaining, tint: .codex, display: display, palette: palette)
             Label(ResetTimestamp.text(window?.resetDate), systemImage: "clock")
                 .font(.system(size: 9)).monospacedDigit().foregroundStyle(palette.secondary)
                 .lineLimit(1).minimumScaleFactor(0.75)

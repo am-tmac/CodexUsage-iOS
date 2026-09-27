@@ -79,6 +79,40 @@ public enum ThemePreference: String, CaseIterable, Codable, Sendable {
     }
 }
 
+/// Whether percentages read as what is left (the default, what every API reports) or what is
+/// used (100 − remaining). Display only: the stored numbers are always the reported remaining
+/// share, and the ≤20%-left warning colour is decided on that, whichever way it is shown.
+public enum UsageDisplay: String, CaseIterable, Codable, Sendable {
+    case remaining, used
+    public var displayName: String { self == .remaining ? "剩余" : "已用" }
+    /// The share to print and to light on the meter. Nil stays nil — never a guessed 0 or 100.
+    public func shown(_ remaining: Double?) -> Double? {
+        guard let remaining, remaining.isFinite else { return nil }
+        let clamped = min(100, max(0, remaining))
+        return self == .remaining ? clamped : 100 - clamped
+    }
+    public func text(_ remaining: Double?) -> String { shown(remaining).map { "\(Int($0.rounded()))%" } ?? "—" }
+    public func accessibility(_ remaining: Double?) -> String {
+        shown(remaining).map { "\(displayName) \(Int($0.rounded()))%" } ?? "暂无额度数据"
+    }
+    public static func load(from url: URL) -> UsageDisplay {
+        guard let data = try? Data(contentsOf: url),
+              let raw = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              let value = UsageDisplay(rawValue: raw) else { return .remaining }
+        return value
+    }
+    public func save(to url: URL) throws {
+        try Data(rawValue.utf8).write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+    }
+    /// Lives next to theme.txt in the shared container, so the widget reads the same choice.
+    public static var url: URL? { try? SharedStorage.container().appendingPathComponent("usage-display.txt") }
+    public static func load() -> UsageDisplay { url.map(load(from:)) ?? .remaining }
+    public func save() throws {
+        guard let url = Self.url else { throw ServiceError.storage("用量显示设置不可用") }
+        try save(to: url)
+    }
+}
+
 /// One refresh control can serve several accounts or providers; the same account is never
 /// refreshed twice in a single user action, and empty slots are dropped instead of guessed.
 public enum RefreshTargets {

@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
-"""Package private-ID unsigned build 27, rejecting stale or signed payloads.
+"""Package private-ID unsigned build 28, rejecting stale or signed payloads.
 
-Build 27 reworks the App screens only (widget untouched): official provider marks, collapsed-card
+Build 28: Claude keeps its access token until 5 min before expiry (like CLIProxyAPI) so the refresh
+token rotates a few times a day instead of on every refresh; only the App rotates. All providers
+refresh concurrently over one shared URLSession (10 s timeout); launch/foreground refreshes are
+silent and skipped within 60 s; the widget refreshes both slots at once with a 20 s success
+cooldown; widget meters use the App's per-service colours; new 设置 › 用量显示 (剩余 / 已用).
+
+Build 27 reworked the App screens only (widget untouched): official provider marks, collapsed-card
 summary line, reset countdowns from the reported reset time, and a 连接账号 sheet that now holds every
 sign-in (status page = account cards, "⋯" menus = refresh / reauthorize / remove). No demo mode.
 
@@ -27,7 +33,7 @@ import subprocess
 import zipfile
 
 root = Path(__file__).resolve().parents[1]
-app = root / 'Build27Direct/Build/Products/Release-iphoneos/CodexUsage.app'
+app = root / 'Build28Direct/Build/Products/Release-iphoneos/CodexUsage.app'
 appex = app / 'PlugIns/CodexUsageWidget.appex'
 # Private identifiers come from the untracked Configuration/Private.xcconfig, never from this file.
 private = {}
@@ -42,7 +48,7 @@ for bundle, bundle_id in zip((app, appex), ids):
     assert not (bundle / '_CodeSignature').exists(), bundle
     assert not (bundle / 'embedded.mobileprovision').exists(), bundle
     info = plistlib.loads((bundle / 'Info.plist').read_bytes())
-    assert (info['CFBundleIdentifier'], info['CFBundleVersion'], info['CFBundleShortVersionString'], info['MinimumOSVersion']) == (bundle_id, '27', '2.0', '17.0'), info
+    assert (info['CFBundleIdentifier'], info['CFBundleVersion'], info['CFBundleShortVersionString'], info['MinimumOSVersion']) == (bundle_id, '28', '2.0', '17.0'), info
     assert '$(' not in str(info)
     executable = bundle / info['CFBundleExecutable']
     assert 'arm64' in subprocess.check_output(['lipo', '-archs', str(executable)], text=True)
@@ -76,6 +82,12 @@ assert 'CodexUsage.Claude.session.v1'.encode() in app_binary
 assert '授权码格式无法识别，或不属于本次登录'.encode() in app_binary
 assert '登录已失效，请重新点「打开授权页面」'.encode() in app_binary
 assert '授权码格式无法识别，请粘贴页面上显示的整段内容'.encode() not in app_binary   # old message gone
+# --- build 28: usage display setting, token cache, shared meter colours ---
+assert '百分比和用量条显示剩余还是已用'.encode() in app_binary
+assert 'usage-display.txt'.encode() in app_binary and 'usage-display.txt'.encode() in widget
+assert '令牌已存入本机钥匙串'.encode() in app_binary
+assert '登录成功，已保存刷新令牌（访问令牌未保存）'.encode() not in app_binary   # old claim gone
+assert 'CodexUsage.refresh'.encode() in app_binary                            # background task name
 # --- build 27 App screens: connect sheet, per-service pages, card menus, shortened captions ---
 assert '令牌只存本机钥匙串'.encode() in app_binary
 assert '订阅额度 · 非官方 OAuth 兼容'.encode() in app_binary
@@ -89,7 +101,7 @@ for logo in ['LogoOpenAI', 'LogoClaude', 'LogoDeepSeek', 'LogoAntigravity']:
 for gone in ['连接 Claude 账号', '登录页面由网站提供', '已阻止非 Claude 或已知登录提供商']:
     assert gone.encode() not in app_binary, gone
 
-out = root / 'Dist/CodexUsage-widget-build27-unsigned.ipa'
+out = root / 'Dist/CodexUsage-widget-build28-unsigned.ipa'
 out.parent.mkdir(exist_ok=True)
 with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as archive:
     for path in app.rglob('*'):
@@ -99,7 +111,7 @@ with zipfile.ZipFile(out) as archive:
     assert archive.testzip() is None
     for suffix, bundle_id in (('', ids[0]), ('PlugIns/CodexUsageWidget.appex/', ids[1])):
         info = plistlib.loads(archive.read('Payload/CodexUsage.app/' + suffix + 'Info.plist'))
-        assert (info['CFBundleIdentifier'], info['CFBundleVersion'], info['CFBundleShortVersionString']) == (bundle_id, '27', '2.0')
+        assert (info['CFBundleIdentifier'], info['CFBundleVersion'], info['CFBundleShortVersionString']) == (bundle_id, '28', '2.0')
 print(out)
 print('sha256:', hashlib.sha256(out.read_bytes()).hexdigest())
-print('bundle IDs:', *ids, 'version: 2.0 (27)')
+print('bundle IDs:', *ids, 'version: 2.0 (28)')

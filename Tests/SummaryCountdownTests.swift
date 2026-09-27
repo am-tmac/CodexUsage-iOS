@@ -4,6 +4,23 @@ import XCTest
 /// build 27: collapsed-card summary + reset countdowns. Everything is derived from the reset time
 /// and remaining share the service reported; nothing is estimated.
 final class SummaryCountdownTests: XCTestCase {
+    // build 28: 设置 › 用量显示 flips what is printed, never what is stored.
+    func testUsageDisplayShowsRemainingOrUsedAndNeverInventsAValue() throws {
+        XCTAssertEqual(UsageDisplay.remaining.text(93), "93%")
+        XCTAssertEqual(UsageDisplay.used.text(93), "7%")
+        XCTAssertEqual(UsageDisplay.used.text(nil), "—")
+        XCTAssertNil(UsageDisplay.used.shown(.nan))
+        XCTAssertEqual(UsageDisplay.used.shown(140), 0)
+        XCTAssertEqual(UsageDisplay.remaining.accessibility(40), "剩余 40%")
+        XCTAssertEqual(UsageDisplay.used.accessibility(40), "已用 60%")
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        XCTAssertEqual(UsageDisplay.load(from: url), .remaining, "missing file = default")
+        try UsageDisplay.used.save(to: url)
+        XCTAssertEqual(UsageDisplay.load(from: url), .used)
+        try Data("garbage".utf8).write(to: url)
+        XCTAssertEqual(UsageDisplay.load(from: url), .remaining)
+    }
+
     private var calendar: Calendar {
         var c = Calendar(identifier: .gregorian); c.timeZone = TimeZone(identifier: "Asia/Shanghai")!; return c
     }

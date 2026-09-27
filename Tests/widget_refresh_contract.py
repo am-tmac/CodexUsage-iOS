@@ -43,8 +43,8 @@ class WidgetRefreshContract(unittest.TestCase):
         # No root widgetURL: no tap can be routed around the AppIntent refresh button.
         self.assertNotIn('.widgetURL(', widget)
         self.assertIn('仅缓存 · 组件无刷新授权，打开 App', views)
-        self.assertIn('guard DashboardStore.canRefreshAnyProvider(id) else { continue }', views)
-        self.assertIn('for id in RefreshTargets.unique([leftID, rightID])', views)
+        # build 28: slots without refresh permission are filtered out before the concurrent fetch.
+        self.assertIn('RefreshTargets.unique([leftID, rightID]).filter { DashboardStore.canRefreshAnyProvider($0) }', views)
     def test_widget_refresh_authorization_is_visible_in_the_app(self):
         # The point of the control is that the user can turn the real refresh on: the App must name
         # the missing step and refuse the switch instead of silently failing.
@@ -136,7 +136,7 @@ class WidgetRefreshContract(unittest.TestCase):
         # sessionKey/key path are DELETED, not hidden — no paste field, no cookie store, no
         # key-based fetch, no allowlist of challenge hosts. The provider is a real sign-in.
         for name in ['App/ClaudePanel.swift', 'Shared/Claude.swift', 'App/CodexUsageApp.swift',
-                     'Widget/CodexUsageWidget.swift', 'Scripts/package_widget_build26.py']:
+                     'Widget/CodexUsageWidget.swift', 'Scripts/package_widget_build28.py']:
             text = (ROOT / name).read_text()
             self.assertNotIn('sessionKey', text)
             self.assertNotIn('saveCookie', text)
@@ -161,12 +161,22 @@ class WidgetRefreshContract(unittest.TestCase):
         self.assertIn('127.0.0.1', panel)
         self.assertIn('SFSafariViewController', panel)
         self.assertIn('ASWebAuthenticationSession', panel)  # documented as unusable here
-        # Only the refresh token is persisted; the access token is never stored.
+        # Contract change (build 28): the rule used to be "only the refresh token is persisted".
+        # Exchanging it on every refresh rotated it dozens of times a day, and any rotation whose
+        # reply was lost signed the user out ("又掉了"). The access token and its expiry are now kept
+        # too — same model as CLIProxyAPI — in this device's keychain only, reused until 5 minutes
+        # before expiry; only the App rotates, the widget never does.
         self.assertIn('static let service = "CodexUsage.Claude.oauth.v1"', claude)
         self.assertIn('struct ClaudeCredential: Codable, Equatable {', claude)
-        credential = claude.split('struct ClaudeCredential: Codable, Equatable {', 1)[1].split('}', 1)[0]
-        self.assertIn('refreshToken', credential)
-        self.assertNotIn('accessToken', credential)
+        credential = claude.split('struct ClaudeCredential: Codable, Equatable {', 1)[1].split('\n}', 1)[0]
+        for field in ['var refreshToken: String', 'var accessToken: String? = nil', 'var accessExpiresAt: Date? = nil']:
+            self.assertIn(field, credential)
+        self.assertIn('static let margin: TimeInterval = 300', credential)
+        self.assertIn('kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly', claude)
+        self.assertIn('guard !widget else {', claude)   # the widget never rotates
+        # Tokens never reach a snapshot: the snapshot type carries only the usage windows.
+        snapshot = claude.split('struct ClaudeSnapshot: Codable, Equatable {', 1)[1].split('\n}', 1)[0]
+        self.assertNotIn('Token', snapshot)
         # The pre-OAuth record is deleted, and the deletion is disclosed.
         self.assertIn('invalidateLegacyCredential', claude)
         self.assertIn('SecItemDelete(legacy as CFDictionary)', claude)
@@ -212,7 +222,8 @@ class WidgetRefreshContract(unittest.TestCase):
         self.assertIn('WidgetRefreshAttempt.load(', widget)
         self.assertIn('refreshing: value.refreshing', widget)
         # Timeline re-render must show progress without issuing a competing fetch.
-        self.assertLess(widget.index('isRefreshing(at: Date())'), widget.index('try await UsageService.shared.refresh(account: id, widget: true'))
+        self.assertLess(widget.index('isRefreshing(at: Date())'), widget.index('WidgetRefresh.one(id: id, provider: provider)'))
+        self.assertIn('!column.refreshing else { return nil }', widget)
         # Extension-kill recovery clears the stale marker before the throttle decision.
         self.assertIn('recoverInterrupted', storage)
         self.assertLess(storage.index('recoverInterrupted(Date())'), storage.index('guard attempt.allows(Date())'))
@@ -226,8 +237,11 @@ class WidgetRefreshContract(unittest.TestCase):
         self.assertIn('#if CODEX_WIDGET', views)
         self.assertEqual(views.count('struct RefreshDashboardIntent: AppIntent'), 1)
         self.assertIn('WidgetCenter.shared.reloadAllTimelines()', views)
-        self.assertIn('catch is CancellationError {\n                throw CancellationError()', views)
-        self.assertIn('catch is CancellationError {\n                return Timeline(entries:', widget)
+        # build 28: both slots refresh concurrently; a cancelled tap still surfaces as cancelled.
+        self.assertIn('await withTaskGroup(of: Void.self)', views)
+        self.assertIn('await withTaskGroup(of: Void.self)', widget)
+        self.assertIn('try Task.checkCancellation()\n        return .result()', views)
+        self.assertEqual(views.count('enum WidgetRefresh {'), 1)
 
     # --- parsers: never rely on generated Xcode object IDs staying the same ---
     def _target_block(self, project, name):

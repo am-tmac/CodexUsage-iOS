@@ -12,15 +12,17 @@ class DashboardContract(unittest.TestCase):
         self.assertIn('granted', app)
         self.assertIn('toppedUp', app)
         widget = (R/'Widget/CodexUsageWidget.swift').read_text()
-        for token in ['AppIntentConfiguration', '.systemSmall, .systemMedium', 'leftAccount', 'rightAccount', 'DashboardStore.canRefresh', 'DeepSeekService.shared.refresh']:
+        for token in ['AppIntentConfiguration', '.systemSmall, .systemMedium', 'leftAccount', 'rightAccount', 'DashboardStore.canRefresh', 'WidgetRefresh.one(']:
             self.assertIn(token, widget)
+        # build 28: the per-provider dispatch is shared by the timeline and the button.
+        self.assertIn('case "deepseek": _ = try await DeepSeekService.shared.refresh(id: id)', (R/'Shared/UsageViews.swift').read_text())
         # build 27: the panel moved into the 连接账号 sheet together with every other sign-in.
         self.assertIn('DeepSeekPanel(model: model)', (R/'App/ConnectViews.swift').read_text())
         # 三种来源都能落到组件槽位里（Codex / DeepSeek / Antigravity；OpenCode 已按用户要求摘除）。
         views = (R/'Shared/UsageViews.swift').read_text()
         for token in ['AntigravityWidgetView', 'DeepSeekStackedCardView', 'CompactUsageView']:
             self.assertIn(token, views)
-        self.assertIn('AntigravityService.shared.refresh', widget)
+        self.assertIn('AntigravityService.shared.refresh', (R/'Shared/UsageViews.swift').read_text())   # via WidgetRefresh.one
     def test_navy_dashboard_no_charts_and_no_secrets(self):
         views = (R/'Shared/UsageViews.swift').read_text()
         # 组件侧只有一套调色板：深海军蓝背景 + 白色主文字定义在 ThemePalette 内，

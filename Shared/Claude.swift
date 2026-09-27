@@ -12,9 +12,13 @@ import CryptoKit
 // approval: the client, the scopes and the usage endpoint can change or be blocked at any time.
 // The App requests the user's own consent in its panel and never presents this as compliant.
 //
-// What is stored: the OAuth **refresh token** only. The short-lived access token is exchanged on
-// demand and never persisted, never written to a snapshot, never logged. No password is ever typed
-// into the App.
+// What is stored (build 28, same model as CLIProxyAPI): the OAuth refresh token plus the current
+// access token and its expiry, all in this device's keychain only — never in a snapshot or a log.
+// The access token is reused until 5 minutes before it expires, so the refresh token is rotated a
+// few times a day instead of on every refresh. Every rotation invalidates the previous refresh
+// token server-side; rotating on each refresh meant any rotation whose reply was lost (App
+// suspended, network drop, cancelled request) signed the user out. Only the App rotates; the widget
+// uses a still-valid access token or shows the cache. No password is ever typed into the App.
 
 struct ClaudeWindow: Codable, Equatable {
     /// Remaining share of the window (100 − the API's used percent). Nil when the API omits it.
@@ -125,6 +129,16 @@ enum ClaudeOAuth {
 struct ClaudeCredential: Codable, Equatable {
     var refreshToken: String
     var obtainedAt: Date
+    /// Optional so records written by build 27 and earlier (refresh token only) still decode.
+    var accessToken: String? = nil
+    var accessExpiresAt: Date? = nil
+    /// Reusable only while it has more than `margin` left — the same 5-minute lead CLIProxyAPI uses.
+    static let margin: TimeInterval = 300
+    func usableAccessToken(now: Date = Date()) -> String? {
+        guard let accessToken, !accessToken.isEmpty, let accessExpiresAt,
+              accessExpiresAt.timeIntervalSince(now) > Self.margin else { return nil }
+        return accessToken
+    }
 }
 
 enum ClaudeStore {
@@ -224,7 +238,7 @@ struct ClaudeAPI {
         return value
     }
 
-    struct Tokens { let accessToken: String; let refreshToken: String? }
+    struct Tokens { let accessToken: String; let refreshToken: String?; var expiresIn: TimeInterval? = nil }
 
     /// POST the authorize-code grant. PKCE only — the CLI client is public and no client secret is
     /// involved; the verifier, the exact redirect URI and the state are all required.
@@ -251,7 +265,9 @@ struct ClaudeAPI {
         guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               let access = object["access_token"] as? String, !access.isEmpty else { throw ClaudeFailure.malformed }
         let rotated = (object["refresh_token"] as? String).flatMap { $0.isEmpty ? nil : $0 }
-        return Tokens(accessToken: access, refreshToken: rotated)
+        let expires = (object["expires_in"] as? Double) ?? (object["expires_in"] as? Int).map(Double.init)
+        return Tokens(accessToken: access, refreshToken: rotated,
+                      expiresIn: expires.flatMap { $0.isFinite && $0 > 0 ? $0 : nil })
     }
 
     /// GET the account usage windows with the OAuth bearer token.
@@ -330,12 +346,16 @@ actor ClaudeService {
     let store: ClaudeCredentialStore
     init(api: ClaudeAPI = ClaudeAPI(), store: ClaudeCredentialStore = .keychain) { self.api = api; self.store = store }
 
-    /// App-only: store the refresh token of a completed sign-in. The access token is discarded.
-    func install(refreshToken: String) throws {
+    /// App-only: store a completed sign-in — refresh token plus the access token and its expiry.
+    func install(tokens: ClaudeAPI.Tokens) throws {
         guard !SharedStorage.isWidget else { throw ClaudeFailure.storage }
+        guard let refresh = tokens.refreshToken else { throw ClaudeFailure.malformed }
         let lease = try CredentialLease(account: ClaudeStore.id); defer { withExtendedLifetime(lease) {} }
-        try ClaudeStore.saveCredential(ClaudeCredential(refreshToken: try ClaudeAPI.validatedRefreshToken(refreshToken),
-                                                        obtainedAt: Date()))
+        try ClaudeStore.saveCredential(Self.credential(refresh: try ClaudeAPI.validatedRefreshToken(refresh), tokens: tokens, now: Date()))
+    }
+    static func credential(refresh: String, tokens: ClaudeAPI.Tokens, now: Date) -> ClaudeCredential {
+        ClaudeCredential(refreshToken: refresh, obtainedAt: now, accessToken: tokens.accessToken,
+                         accessExpiresAt: tokens.expiresIn.map { now.addingTimeInterval($0) })
     }
     func remove() throws {
         guard !SharedStorage.isWidget else { throw ClaudeFailure.storage }
@@ -358,16 +378,23 @@ actor ClaudeService {
         attempt.begin(Date()); try attempt.save(ClaudeStore.id)
         do {
             let credential = try store.load(widget)
-            let tokens = try await api.refreshToken(credential.refreshToken)
-            if let rotated = tokens.refreshToken, rotated != credential.refreshToken {
-                // The old refresh token is already dead. Persist the rotation (App and extension
-                // alike) before using the new access token; if it cannot be written, stop here
-                // rather than show numbers from a login that the next refresh will have lost.
-                let updated = ClaudeCredential(refreshToken: rotated, obtainedAt: Date())
-                do { try RotationPersistence.save { try store.save(updated, widget) } }
-                catch { throw ClaudeFailure.storage }
+            let value: ClaudeSnapshot
+            if let cached = credential.usableAccessToken() {
+                do { value = try await api.usage(accessToken: cached) }
+                catch ClaudeFailure.unauthorized where !widget {
+                    // Revoked early: rotate once (App only) and retry with the new token.
+                    value = try await api.usage(accessToken: try await rotate(credential, widget: widget))
+                }
+            } else {
+                // Rotation belongs to the App alone: two processes rotating the same refresh token
+                // race, and the loser holds a token the server has already invalidated.
+                guard !widget else {
+                    attempt.succeed(Date()); try? attempt.save(ClaudeStore.id)
+                    if let cache = ClaudeStore.snapshot() { return cache }
+                    throw ClaudeFailure.busy
+                }
+                value = try await api.usage(accessToken: try await rotate(credential, widget: widget))
             }
-            let value = try await api.usage(accessToken: tokens.accessToken)
             try Task.checkCancellation()
             try ClaudeStore.save(value)
             attempt.succeed(Date()); try attempt.save(ClaudeStore.id)
@@ -377,5 +404,15 @@ actor ClaudeService {
             if error is CancellationError { throw CancellationError() }
             throw (error as? ClaudeFailure) ?? ClaudeFailure.storage
         }
+    }
+    /// Exchanges the refresh token and persists the result before the new access token is used.
+    /// The old refresh token is dead the moment the server answers; if the new one cannot be
+    /// written, stop rather than show numbers from a login the next refresh will have lost.
+    private func rotate(_ credential: ClaudeCredential, widget: Bool) async throws -> String {
+        let tokens = try await api.refreshToken(credential.refreshToken)
+        let updated = Self.credential(refresh: tokens.refreshToken ?? credential.refreshToken, tokens: tokens, now: Date())
+        do { try RotationPersistence.save { try store.save(updated, widget) } }
+        catch { throw ClaudeFailure.storage }
+        return tokens.accessToken
     }
 }

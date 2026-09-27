@@ -53,6 +53,7 @@ struct UsageEntry: TimelineEntry {
     let left: DashboardColumn
     let right: DashboardColumn
     var theme: ThemePreference = .system
+    var display: UsageDisplay = .remaining
 }
 struct UsageProvider: AppIntentTimelineProvider {
     func placeholder(in context: Context) -> UsageEntry {
@@ -61,7 +62,7 @@ struct UsageProvider: AppIntentTimelineProvider {
     func entry(_ configuration: DashboardConfiguration) -> UsageEntry {
         let leftID = configuration.leftAccount?.id ?? SharedStorage.selectedAccount() ?? DashboardStore.accounts().first?.id
         let rightID = configuration.rightAccount?.id ?? DashboardStore.accounts().first(where: { $0.id != leftID && $0.provider == "deepseek" })?.id ?? DashboardStore.accounts().first(where: { $0.id != leftID })?.id
-        return UsageEntry(date: Date(), left: .load(leftID), right: .load(rightID, defaultProvider: "deepseek"), theme: ThemePreference.load())
+        return UsageEntry(date: Date(), left: .load(leftID), right: .load(rightID, defaultProvider: "deepseek"), theme: ThemePreference.load(), display: UsageDisplay.load())
     }
     func snapshot(for configuration: DashboardConfiguration, in context: Context) async -> UsageEntry {
         SharedStorage.recordWidgetDiagnostics()
@@ -71,17 +72,18 @@ struct UsageProvider: AppIntentTimelineProvider {
         SharedStorage.recordWidgetDiagnostics()
         let cached = entry(configuration)
         let columns = context.family == .systemMedium ? [cached.left, cached.right] : [cached.left]
-        for id in RefreshTargets.unique(columns.map { $0.id }) {
-            let column = columns.first { $0.id == id }
-            guard let column, column.canRefresh, !column.refreshing else { continue }
-            do {
-                if column.provider == "deepseek" { _ = try await DeepSeekService.shared.refresh(id: id) }
-                else if column.provider == "antigravity" { _ = try await AntigravityService.shared.refresh() }
-                else if column.provider == "claude" { _ = try await ClaudeService.shared.refresh() }
-                else { _ = try await UsageService.shared.refresh(account: id, widget: true, permission: { DashboardStore.canRefresh(id, provider: "codex") }) }
-            } catch is CancellationError {
-                return Timeline(entries: [entry(configuration)], policy: .after(Date().addingTimeInterval(900)))
-            } catch { /* Last successful cache and persisted failure are preserved. */ }
+        // Both columns refresh concurrently (build 28); each keeps its own lease, throttle and cache.
+        let targets = RefreshTargets.unique(columns.map { $0.id }).compactMap { id -> (String, String)? in
+            guard let column = columns.first(where: { $0.id == id }), column.canRefresh, !column.refreshing else { return nil }
+            return (id, column.provider)
+        }
+        await withTaskGroup(of: Void.self) { group in
+            for (id, provider) in targets {
+                group.addTask {
+                    // Failures keep the last successful cache and the persisted failure flag.
+                    _ = try? await WidgetRefresh.one(id: id, provider: provider)
+                }
+            }
         }
         return Timeline(entries: [entry(configuration)], policy: .after(Date().addingTimeInterval(900)))
     }
@@ -100,13 +102,13 @@ struct DashboardWidgetView: View {
                                     cacheOnly: !value.canRefresh, palette: palette)
             }
         } else if value.provider == "antigravity" {
-            AntigravityWidgetView(snapshot: value.antigravity, palette: palette)
+            AntigravityWidgetView(snapshot: value.antigravity, palette: palette, display: entry.display)
         } else if value.provider == "claude" {
-            ClaudeCompactView(snapshot: value.claude, failed: value.failed, cacheOnly: !value.canRefresh, palette: palette)
+            ClaudeCompactView(snapshot: value.claude, failed: value.failed, cacheOnly: !value.canRefresh, palette: palette, display: entry.display)
         } else {
             CompactUsageView(snapshot: value.usage, failed: value.failed, refreshing: value.refreshing,
                              sharingUnavailable: !SharedStorage.cacheSharingAvailable, cacheOnly: !value.canRefresh,
-                             palette: palette)
+                             palette: palette, display: entry.display)
         }
     }
     var isMedium: Bool { family == .systemMedium }
