@@ -45,7 +45,10 @@ struct RefreshDashboardIntent: AppIntent {
     init(leftID: String?, rightID: String?) { self.leftID = leftID; self.rightID = rightID }
     func perform() async throws -> some IntentResult {
         defer { WidgetCenter.shared.reloadAllTimelines() }
-        let targets = RefreshTargets.unique([leftID, rightID]).filter { DashboardStore.canRefreshAnyProvider($0) }
+        let targets = RefreshTargets.unique([leftID, rightID]).filter {
+            DashboardStore.canRefreshAnyProvider($0) &&
+            ($0 != ClaudeStore.id || !WidgetRefreshAttempt.load($0).requiresAppRefresh)
+        }
         let accounts = DashboardStore.accounts()
         // Both slots at once (build 28): the tap now waits for the slower slot, not the sum.
         await withTaskGroup(of: Void.self) { group in
@@ -534,6 +537,7 @@ struct ClaudeCompactView: View {
     let cacheOnly: Bool
     let palette: ThemePalette
     var display: UsageDisplay = .remaining
+    var needsAppRefresh = false
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("Claude").font(.system(size: 19, weight: .bold)).foregroundStyle(palette.primary)
@@ -543,9 +547,12 @@ struct ClaudeCompactView: View {
             HStack(spacing: 3) {
                 Text("更新")
                 if let date = snapshot?.updatedAt { Text(date, style: .time) } else { Text("—") }
+                if snapshot?.isStale() == true { Text("· 已过期") }
             }.font(.system(size: 9)).foregroundStyle(palette.secondary)
-            if cacheOnly { Text("仅缓存 · 组件无刷新授权，打开 App").font(.system(size: 9)).foregroundStyle(palette.secondary).lineLimit(1).minimumScaleFactor(0.7) }
+            if needsAppRefresh { Text(snapshot == nil ? "无缓存 · 打开 App 更新授权" : "仅缓存 · 打开 App 更新授权").font(.system(size: 9)).foregroundStyle(palette.secondary).lineLimit(1).minimumScaleFactor(0.7) }
+            else if cacheOnly { Text(snapshot == nil ? "无缓存 · 组件无刷新授权，打开 App" : "仅缓存 · 组件无刷新授权，打开 App").font(.system(size: 9)).foregroundStyle(palette.secondary).lineLimit(1).minimumScaleFactor(0.7) }
             else if failed { Text("刷新失败 · 保留缓存").font(.system(size: 9)).foregroundStyle(palette.secondary) }
+            else if snapshot == nil { Text("无缓存 · 打开 App 刷新 Claude").font(.system(size: 9)).foregroundStyle(palette.secondary) }
         }
     }
     func row(_ title: String, _ window: ClaudeWindow?) -> some View {

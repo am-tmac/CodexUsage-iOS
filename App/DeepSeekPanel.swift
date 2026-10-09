@@ -28,7 +28,7 @@ struct DeepSeekPanel: View {
     func refresh(_ id: String) async {
         message = nil
         if let error = await model.refreshDeepSeek(id) {
-            message = (error as? DeepSeekError)?.localizedDescription ?? "余额更新失败，保留缓存"
+            message = error.localizedDescription
         }
     }
     var body: some View {

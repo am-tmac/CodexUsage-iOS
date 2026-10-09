@@ -91,9 +91,26 @@ struct SummaryLine: View {
     var palette: AppPalette
     @Environment(\.colorScheme) private var scheme
     @Environment(\.usageDisplay) private var display
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     var body: some View {
         if let window, let remaining = window.remaining {
             let colors = MeterColors(brand: brand, remaining: remaining, palette: palette, dark: scheme == .dark)
+            if dynamicTypeSize.isAccessibilitySize {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(alignment: .firstTextBaseline, spacing: 10) {
+                        Text(display.text(remaining)).scaledFont(17, weight: .bold, relativeTo: .headline)
+                            .monospacedDigit().foregroundStyle(palette.primary).fixedSize(horizontal: false, vertical: true)
+                        Text(window.label).scaledFont(12, relativeTo: .caption).foregroundStyle(palette.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    TimelineView(.periodic(from: .now, by: 60)) { context in
+                        Text(Countdown.short(window.reset, now: context.date))
+                            .scaledFont(13, relativeTo: .footnote).monospacedDigit().foregroundStyle(palette.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .accessibilityElement(children: .combine)
+            } else {
             HStack(alignment: .center, spacing: 10) {
                 DashMeter(remainingPercent: remaining, palette: palette, dashes: 22, height: 12,
                           litColor: colors.lit, restColor: colors.rest, display: display)
@@ -110,6 +127,7 @@ struct SummaryLine: View {
                 }
             }
             .accessibilityElement(children: .combine)
+            }
         } else {
             Text("暂无额度数据").scaledFont(13, relativeTo: .footnote).foregroundStyle(palette.secondary)
         }

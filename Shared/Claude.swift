@@ -34,11 +34,13 @@ struct ClaudeSnapshot: Codable, Equatable {
 }
 
 enum ClaudeFailure: LocalizedError {
-    case loginRequired, unauthorized, busy, unavailable, network, malformed, storage, listenerBusy
+    case loginRequired, unauthorized, forbidden, needsAppRefresh, busy, unavailable, network, malformed, storage, listenerBusy
     var errorDescription: String? {
         switch self {
         case .loginRequired: return "尚未用 Claude 账号登录，请先在设置里登录"
         case .unauthorized: return "Claude 授权已失效或未获授权，请重新登录（不会询问密码）"
+        case .forbidden: return "Claude 用量访问被拒绝；保留缓存，请在 App 检查账号授权与服务可用性"
+        case .needsAppRefresh: return "Claude 访问授权需要更新，请打开 App 刷新；组件不会续期授权"
         case .busy: return "Claude 请求过于频繁，请稍后重试"
         case .unavailable: return "Claude 用量接口暂不可用；保留缓存，不推算额度"
         case .network: return "Claude 网络连接失败；保留缓存"
@@ -194,21 +196,15 @@ enum ClaudeStore {
         }
         return value
     }
-    /// Deletes the pre-OAuth record written by the removed web-session path, plus its snapshot, so
-    /// no dead third-party session cookie stays on the device. Returns true when something was
-    /// removed, which is what the panel reports to the user.
-    static func invalidateLegacyCredential() -> Bool {
+    /// Delete only the pre-OAuth session credential. Its old quota filename was also reused by
+    /// OAuth, so file existence cannot establish ownership: preserve current cache and backoff.
+    /// A successful delete is the one-time migration; subsequent launches return not-found.
+    /// The injectable delete operation keeps regression tests away from the device Keychain.
+    static func invalidateLegacyCredential(delete: (CFDictionary) -> OSStatus = { legacy in SecItemDelete(legacy) }) -> Bool {
         guard !SharedStorage.isWidget else { return false }
         let legacy: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
                                      kSecAttrService as String: legacyService, kSecAttrAccount as String: id]
-        let removed = SecItemDelete(legacy as CFDictionary) == errSecSuccess
-        if let url = try? snapshotURL(), FileManager.default.fileExists(atPath: url.path) {
-            try? FileManager.default.removeItem(at: url)
-        }
-        if let url = try? WidgetRefreshAttempt.url(id), FileManager.default.fileExists(atPath: url.path) {
-            try? FileManager.default.removeItem(at: url)
-        }
-        return removed
+        return delete(legacy as CFDictionary) == errSecSuccess
     }
     static func snapshotURL() throws -> URL { try SharedStorage.snapshotURL("claude:" + id).appendingPathExtension("quota") }
     static func snapshot() -> ClaudeSnapshot? {
@@ -279,7 +275,7 @@ struct ClaudeAPI {
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
         request.setValue(ClaudeOAuth.betaHeader, forHTTPHeaderField: "anthropic-beta")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        let data = try await send(request, unauthorized: [401, 403])
+        let data = try await send(request, unauthorized: [401])
         return try Self.parseUsage(data)
     }
 
@@ -292,6 +288,7 @@ struct ClaudeAPI {
         switch status {
         case 200: break
         case let code where codes.contains(code): throw ClaudeFailure.unauthorized
+        case 403: throw ClaudeFailure.forbidden
         case 429: throw ClaudeFailure.busy
         default: throw ClaudeFailure.unavailable
         }
@@ -370,12 +367,15 @@ actor ClaudeService {
         let lease = try CredentialLease(account: ClaudeStore.id); defer { withExtendedLifetime(lease) {} }
         var attempt = WidgetRefreshAttempt.load(ClaudeStore.id)
         attempt.recoverInterrupted(Date())
-        if widget && !attempt.allows(Date()) {
+        if widget && (attempt.requiresAppRefresh || !attempt.allows(Date())) {
             try attempt.save(ClaudeStore.id)
             if let cache = ClaudeStore.snapshot() { return cache }
-            throw ClaudeFailure.busy
+            throw attempt.requiresAppRefresh ? ClaudeFailure.needsAppRefresh : ClaudeFailure.busy
         }
         attempt.begin(Date()); try attempt.save(ClaudeStore.id)
+        // Set once the App has persisted a rotated token: the widget's renewal marker is then
+        // satisfied even if the usage request that follows fails (e.g. the network drops).
+        var renewed = false
         do {
             let credential = try store.load(widget)
             let value: ClaudeSnapshot
@@ -383,23 +383,30 @@ actor ClaudeService {
                 do { value = try await api.usage(accessToken: cached) }
                 catch ClaudeFailure.unauthorized where !widget {
                     // Revoked early: rotate once (App only) and retry with the new token.
-                    value = try await api.usage(accessToken: try await rotate(credential, widget: widget))
+                    let token = try await rotate(credential, widget: widget); renewed = true
+                    value = try await api.usage(accessToken: token)
                 }
             } else {
                 // Rotation belongs to the App alone: two processes rotating the same refresh token
                 // race, and the loser holds a token the server has already invalidated.
-                guard !widget else {
-                    attempt.succeed(Date()); try? attempt.save(ClaudeStore.id)
-                    if let cache = ClaudeStore.snapshot() { return cache }
-                    throw ClaudeFailure.busy
-                }
-                value = try await api.usage(accessToken: try await rotate(credential, widget: widget))
+                guard !widget else { throw ClaudeFailure.needsAppRefresh }
+                let token = try await rotate(credential, widget: widget); renewed = true
+                value = try await api.usage(accessToken: token)
             }
             try Task.checkCancellation()
             try ClaudeStore.save(value)
             attempt.succeed(Date()); try attempt.save(ClaudeStore.id)
             return value
         } catch {
+            if widget, let failure = error as? ClaudeFailure,
+               failure == .needsAppRefresh || failure == .unauthorized {
+                // An expired/revoked bearer is not a successful usage request. Retain quota
+                // bytes, preserve backoff, and let only a real App refresh clear this marker.
+                attempt.requireAppRefresh(Date()); try attempt.save(ClaudeStore.id)
+                if let cache = ClaudeStore.snapshot() { return cache }
+                throw ClaudeFailure.needsAppRefresh
+            }
+            if renewed { attempt.authorizationRenewed() }
             attempt.fail(Date()); try? attempt.save(ClaudeStore.id)
             if error is CancellationError { throw CancellationError() }
             throw (error as? ClaudeFailure) ?? ClaudeFailure.storage

@@ -35,17 +35,20 @@ struct DashboardColumn {
     let canRefresh: Bool
     let failed: Bool
     let refreshing: Bool
+    var needsAppRefresh = false
     static func load(_ id: String?, defaultProvider: String = "codex") -> Self {
         let row = DashboardStore.accounts().first { $0.id == id }
         let provider = row?.provider ?? defaultProvider
         let attempt = id.map { WidgetRefreshAttempt.load($0) }
+        let needsAppRefresh = provider == "claude" && attempt?.requiresAppRefresh == true
         return Self(id: id, provider: provider, title: row?.title ?? "未选择 / 账号已移除",
                     usage: id.flatMap { SharedStorage.snapshot(account: $0) },
                     balance: id.flatMap { DeepSeekStore.snapshot($0) },
                     antigravity: id.flatMap { _ in AntigravityStore.snapshot() },
                     claude: provider == "claude" ? ClaudeStore.snapshot() : nil,
-                    canRefresh: id.map { DashboardStore.canRefreshAnyProvider($0) } ?? false,
-                    failed: attempt?.failed ?? false, refreshing: attempt?.isRefreshing(at: Date()) ?? false)
+                    canRefresh: !needsAppRefresh && (id.map { DashboardStore.canRefreshAnyProvider($0) } ?? false),
+                    failed: attempt?.failed ?? false, refreshing: attempt?.isRefreshing(at: Date()) ?? false,
+                    needsAppRefresh: needsAppRefresh)
     }
 }
 struct UsageEntry: TimelineEntry {
@@ -104,7 +107,8 @@ struct DashboardWidgetView: View {
         } else if value.provider == "antigravity" {
             AntigravityWidgetView(snapshot: value.antigravity, palette: palette, display: entry.display)
         } else if value.provider == "claude" {
-            ClaudeCompactView(snapshot: value.claude, failed: value.failed, cacheOnly: !value.canRefresh, palette: palette, display: entry.display)
+            ClaudeCompactView(snapshot: value.claude, failed: value.failed, cacheOnly: !value.canRefresh, palette: palette,
+                              display: entry.display, needsAppRefresh: value.needsAppRefresh)
         } else {
             CompactUsageView(snapshot: value.usage, failed: value.failed, refreshing: value.refreshing,
                              sharingUnavailable: !SharedStorage.cacheSharingAvailable, cacheOnly: !value.canRefresh,
@@ -120,12 +124,18 @@ struct DashboardWidgetView: View {
     /// widget passes no right slot, so it never refreshes an account it does not display.
     /// Columns never draw their own button.
     var hasConfiguredAccount: Bool { isMedium ? (entry.left.id != nil || entry.right.id != nil) : entry.left.id != nil }
-    var refreshControl: RefreshAffordance {
-        RefreshAffordance(canRefresh: isMedium ? (entry.left.canRefresh || entry.right.canRefresh) : entry.left.canRefresh,
+    /// A Claude slot awaiting App renewal is excluded from the tap (its column's `canRefresh` is
+    /// already false and the intent filters it), but it must not disable the other slot: the
+    /// control only falls back to opening the App when no displayed slot can refresh here.
+    var slotCanRefresh: Bool { isMedium ? (entry.left.canRefresh || entry.right.canRefresh) : entry.left.canRefresh }
+    var needsAppRefresh: Bool { !slotCanRefresh && (entry.left.needsAppRefresh || (isMedium && entry.right.needsAppRefresh)) }
+    var refreshControl: some View {
+        RefreshAffordance(canRefresh: slotCanRefresh,
                           leftID: entry.left.id, rightID: isMedium ? entry.right.id : nil,
                           palette: palette, label: isMedium ? "刷新组件内的账号" : "刷新该账号",
                           inset: stackedCard ? 4 : 0, topInset: 0,
                           bottomInset: stackedCard ? 4 : 0, bottomAligned: stackedCard)
+            .accessibilityHint(needsAppRefresh ? "打开 App 更新授权" : "")
     }
     var body: some View {
         Group {

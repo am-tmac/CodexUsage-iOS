@@ -1,25 +1,75 @@
 import SwiftUI
 import WidgetKit
 
+enum AppRefreshTarget: Hashable {
+    case codex(String), deepSeek(String), antigravity, claude
+    var accountID: String {
+        switch self {
+        case .codex(let id), .deepSeek(let id): return id
+        case .antigravity: return AntigravityStore.account
+        case .claude: return ClaudeStore.id
+        }
+    }
+}
+
+/// Never display arbitrary localized descriptions or storage details on an account card.
+enum AppRefreshError {
+    static func text(_ error: Error, for target: AppRefreshTarget) -> String {
+        switch target {
+        case .codex:
+            if let error = error as? ServiceError {
+                switch error {
+                case .loginRequired, .expired: return "Codex 登录已失效，请重新授权"
+                case .http(401), .http(403): return "Codex 登录已失效或未获授权，请重新授权"
+                case .http(429): return "Codex 请求受限，请稍后重试或等待额度重置"
+                case .busy: return "Codex 正在刷新，请稍后重试"
+                case .storage: return "Codex 本机储存不可用，请解锁并检查权限"
+                case .malformed: return "Codex 用量格式异常，保留缓存"
+                case .http: return "Codex 服务暂不可用，保留缓存"
+                }
+            }
+            return "Codex 网络连接失败，保留缓存"
+        case .deepSeek: return (error as? DeepSeekError)?.localizedDescription ?? "DeepSeek 刷新失败，保留缓存"
+        case .antigravity: return (error as? AntigravityError)?.localizedDescription ?? "Antigravity 刷新失败，保留缓存"
+        case .claude: return (error as? ClaudeFailure)?.localizedDescription ?? "Claude 刷新失败，保留缓存"
+        }
+    }
+}
+
+/// Inject only the network boundary; production still uses the existing leased services.
+struct AppRefreshFetchers {
+    var codex: @Sendable (String) async throws -> UsageSnapshot = { try await UsageService.shared.refresh(account: $0) }
+    var deepSeek: @Sendable (String) async throws -> DeepSeekSnapshot = { try await DeepSeekService.shared.refresh(id: $0, widget: false) }
+    var antigravity: @Sendable () async throws -> AntigravitySnapshot = { try await AntigravityService.shared.refresh(widget: false) }
+    var claude: @Sendable () async throws -> ClaudeSnapshot = { try await ClaudeService.shared.refresh(widget: false) }
+}
+
 @MainActor final class UsageModel: ObservableObject {
-    @Published var deepSeekIDs = (try? DeepSeekStore.ids()) ?? []
+    @Published var deepSeekIDs: [String] = []
     @Published var balances: [String: DeepSeekSnapshot] = [:]
     /// DeepSeek accounts whose last refresh failed (from the persisted attempt record), loaded with
     /// the balances so no view reads the file while rendering.
     @Published var deepSeekFailed: Set<String> = []
-    @Published var accounts = (try? SharedStorage.accountIDs()) ?? []
+    @Published var accounts: [String] = []
     @Published var snapshots: [String: UsageSnapshot] = [:]
     @Published var emails: [String: String] = [:]
-    @Published var selectedWidget = SharedStorage.selectedAccount()
+    @Published var selectedWidget: String?
     // Antigravity lives in the App's own state and cached snapshot; the widget reads the same
     // snapshot through DashboardStore.
     @Published var antigravity: AntigravitySnapshot?
-    @Published var antigravityInstalled = AntigravityStore.installed()
-    @Published var claudeInstalled = ClaudeStore.installed()
-    @Published var claudeSnapshot: ClaudeSnapshot? = ClaudeStore.snapshot()
-    init() {
-        // build 19 and earlier stored a scraped claude.ai session cookie. That path is deleted, not
-        // hidden, so the now-unusable record and its cache are removed once and the user is told.
+    @Published var antigravityInstalled = false
+    @Published var claudeInstalled = false
+    @Published var claudeSnapshot: ClaudeSnapshot?
+    @Published var refreshErrors: [AppRefreshTarget: String] = [:]
+    private let fetchers: AppRefreshFetchers
+    private var refreshFailureDates: [AppRefreshTarget: Date] = [:]
+    init(loadStoredAccounts: Bool = true, fetchers: AppRefreshFetchers = AppRefreshFetchers()) {
+        self.fetchers = fetchers
+        guard loadStoredAccounts else { return }
+        reloadAccounts()
+        // build 19 and earlier stored a scraped claude.ai session cookie. Only that legacy
+        // Keychain item is deleted (the current OAuth cache and backoff record are kept); the
+        // user is told once, when an old item was actually found and removed.
         if ClaudeStore.invalidateLegacyCredential() {
             try? DashboardStore.publish()
             WidgetCenter.shared.reloadAllTimelines()
@@ -29,7 +79,6 @@ import WidgetKit
     func reloadAccounts() {
         let nextDeepSeekIDs = (try? DeepSeekStore.ids()) ?? []
         let nextBalances = Dictionary(uniqueKeysWithValues: nextDeepSeekIDs.compactMap { id in DeepSeekStore.snapshot(id).map { (id, $0) } })
-        let nextDeepSeekFailed = Set(nextDeepSeekIDs.filter { WidgetRefreshAttempt.load($0).failed })
         try? DashboardStore.publish()
         let nextAccounts = (try? SharedStorage.accountIDs()) ?? []
         let nextSnapshots = Dictionary(uniqueKeysWithValues: nextAccounts.compactMap { id in SharedStorage.snapshot(account: id).map { (id, $0) } })
@@ -44,7 +93,6 @@ import WidgetKit
         // not invalidate every observing view; retain the existing ownership model.
         if deepSeekIDs != nextDeepSeekIDs { deepSeekIDs = nextDeepSeekIDs }
         if balances != nextBalances { balances = nextBalances }
-        if deepSeekFailed != nextDeepSeekFailed { deepSeekFailed = nextDeepSeekFailed }
         if accounts != nextAccounts { accounts = nextAccounts }
         if snapshots != nextSnapshots { snapshots = nextSnapshots }
         if emails != nextEmails { emails = nextEmails }
@@ -54,6 +102,29 @@ import WidgetKit
         if claudeInstalled != nextClaudeInstalled { claudeInstalled = nextClaudeInstalled }
         if claudeSnapshot != nextClaudeSnapshot { claudeSnapshot = nextClaudeSnapshot }
         if signedIn != nextSignedIn { signedIn = nextSignedIn }
+        reloadRefreshAttempts(targets: nextAccounts.map { .codex($0) } + nextDeepSeekIDs.map { .deepSeek($0) }
+                              + (nextAntigravityInstalled ? [.antigravity] : []) + (nextClaudeInstalled ? [.claude] : []))
+    }
+    /// Load persisted feedback outside body; equal reloads emit no UI notifications.
+    func reloadRefreshAttempts(targets: [AppRefreshTarget]) {
+        let live = Set(targets)
+        var next = refreshErrors.filter { live.contains($0.key) }
+        for target in targets {
+            let attempt = WidgetRefreshAttempt.load(target.accountID)
+            if attempt.failed {
+                if next[target] == nil { next[target] = "刷新失败，保留缓存；请重试或检查授权" }
+            } else if let completed = attempt.completedAt,
+                      completed >= (refreshFailureDates[target] ?? .distantPast) {
+                next[target] = nil
+                refreshFailureDates[target] = nil
+            }
+        }
+        let failedWallets = Set(next.keys.compactMap { target -> String? in
+            if case .deepSeek(let id) = target { return id }; return nil
+        })
+        refreshFailureDates = refreshFailureDates.filter { live.contains($0.key) }
+        if refreshErrors != next { refreshErrors = next }
+        if deepSeekFailed != failedWallets { deepSeekFailed = failedWallets }
     }
     func selectWidget(_ id: String) {
         do { try SharedStorage.selectWidgetAccount(id); reloadAccounts(); WidgetCenter.shared.reloadAllTimelines() }
@@ -70,7 +141,7 @@ import WidgetKit
     @Published var busy = false
     @Published var signingIn = false
     @Published var message: String?
-    @Published var signedIn = (try? SharedStorage.credentials()) != nil
+    @Published var signedIn = false
     private var loginTask: Task<Void, Never>?
     private var generation = UUID()
     /// True only while a refresh the user asked for (button / pull) is running; automatic refreshes
@@ -88,9 +159,11 @@ import WidgetKit
     /// Every provider and account is fetched concurrently (build 28): the refresh now takes as long
     /// as the slowest service instead of the sum of all of them. Each result lands on its card as
     /// soon as it arrives; a failure keeps that card's cache.
-    func refresh(account: String? = nil, userInitiated: Bool = true) async {
+    /// Returns false when another refresh was already running and this call fetched nothing.
+    @discardableResult
+    func refresh(account: String? = nil, target: AppRefreshTarget? = nil, userInitiated: Bool = true) async -> Bool {
         // A tap during a silent refresh just shows the spinner until that refresh lands.
-        guard !busy else { if userInitiated { spinning = true }; return }
+        guard !busy else { if userInitiated { spinning = true }; return false }
         busy = true
         if userInitiated { spinning = true }
         // Ask iOS for time to finish if the App is backgrounded mid-refresh, so a token exchange
@@ -100,65 +173,72 @@ import WidgetKit
             busy = false; spinning = false
             if background != .invalid { UIApplication.shared.endBackgroundTask(background) }
         }
-        message = nil
         enum Result { case codex(String, UsageSnapshot), deepSeek(String, DeepSeekSnapshot), antigravity(AntigravitySnapshot),
-                      claude(ClaudeSnapshot), failed(String), cancelled }
-        let codexIDs = account.map { [$0] } ?? accounts
-        let full = account == nil
-        let deepSeek = full ? deepSeekIDs : []
-        let withAntigravity = full && antigravityInstalled, withClaude = full && claudeInstalled
+                      claude(ClaudeSnapshot), failed(AppRefreshTarget, String), cancelled }
+        let selection = target ?? account.map { AppRefreshTarget.codex($0) }
+        let full = selection == nil
+        let codexIDs: [String]
+        let deepSeek: [String]
+        if case .codex(let id)? = selection { codexIDs = [id] } else { codexIDs = full ? accounts : [] }
+        if case .deepSeek(let id)? = selection { deepSeek = [id] } else { deepSeek = full ? deepSeekIDs : [] }
+        let withAntigravity = selection == .antigravity || (full && antigravityInstalled)
+        let withClaude = selection == .claude || (full && claudeInstalled)
+        let fetchers = self.fetchers
         await withTaskGroup(of: Result.self) { group in
             for id in codexIDs {
                 group.addTask {
-                    do { return .codex(id, try await UsageService.shared.refresh(account: id)) }
+                    do { return .codex(id, try await fetchers.codex(id)) }
                     catch is CancellationError { return .cancelled }
-                    catch { return .failed(error.localizedDescription) }
+                    catch { return .failed(.codex(id), AppRefreshError.text(error, for: .codex(id))) }
                 }
             }
             for id in deepSeek {
                 group.addTask {
-                    do { return .deepSeek(id, try await DeepSeekService.shared.refresh(id: id, widget: false)) }
+                    do { return .deepSeek(id, try await fetchers.deepSeek(id)) }
                     catch is CancellationError { return .cancelled }
-                    catch { return .failed(error.localizedDescription) }
+                    catch { return .failed(.deepSeek(id), AppRefreshError.text(error, for: .deepSeek(id))) }
                 }
             }
             if withAntigravity {
                 group.addTask {
-                    do { return .antigravity(try await AntigravityService.shared.refresh(widget: false)) }
+                    do { return .antigravity(try await fetchers.antigravity()) }
                     catch is CancellationError { return .cancelled }
-                    catch { return .failed(error.localizedDescription) }
+                    catch { return .failed(.antigravity, AppRefreshError.text(error, for: .antigravity)) }
                 }
             }
             if withClaude {
                 group.addTask {
-                    do { return .claude(try await ClaudeService.shared.refresh(widget: false)) }
+                    do { return .claude(try await fetchers.claude()) }
                     catch is CancellationError { return .cancelled }
-                    catch { return .failed((error as? ClaudeFailure)?.localizedDescription ?? "Claude 刷新失败，保留缓存") }
+                    catch { return .failed(.claude, AppRefreshError.text(error, for: .claude)) }
                 }
             }
             for await result in group {
                 switch result {
-                case let .codex(id, value): snapshots[id] = value
-                case let .deepSeek(id, value): balances[id] = value
-                case let .antigravity(value): antigravity = value
-                case let .claude(value): claudeSnapshot = value
-                case let .failed(text): message = text
+                case let .codex(id, value): snapshots[id] = value; refreshErrors[.codex(id)] = nil
+                case let .deepSeek(id, value): balances[id] = value; refreshErrors[.deepSeek(id)] = nil; deepSeekFailed.remove(id)
+                case let .antigravity(value): antigravity = value; refreshErrors[.antigravity] = nil
+                case let .claude(value): claudeSnapshot = value; refreshErrors[.claude] = nil
+                case let .failed(target, text):
+                    refreshErrors[target] = text
+                    refreshFailureDates[target] = Date()
+                    if case .deepSeek(let id) = target { deepSeekFailed.insert(id) }
                 case .cancelled: break
                 }
             }
         }
         if full { lastFullRefresh = Date() }
         WidgetCenter.shared.reloadAllTimelines()
+        return true
     }
     /// Refreshes one DeepSeek account (the 设置 panel's per-account button). Shares `busy` with the
-    /// full refresh, so the two can never race on the same key.
+    /// full refresh, so the two can never race on the same key. When skipped because another
+    /// refresh is running, report that instead of returning the card's previous error.
     func refreshDeepSeek(_ id: String) async -> Error? {
-        guard !busy else { return nil }
-        busy = true
-        defer { busy = false; reloadAccounts(); WidgetCenter.shared.reloadAllTimelines() }
-        do { balances[id] = try await DeepSeekService.shared.refresh(id: id, widget: false); return nil }
-        catch is CancellationError { return nil }
-        catch { return error }
+        guard await refresh(target: .deepSeek(id)) else {
+            return NSError(domain: "CodexUsage.AppRefresh", code: 2, userInfo: [NSLocalizedDescriptionKey: "正在刷新，请稍后重试"])
+        }
+        return refreshErrors[.deepSeek(id)].map { NSError(domain: "CodexUsage.AppRefresh", code: 1, userInfo: [NSLocalizedDescriptionKey: $0]) }
     }
     func login() {
         cancelLogin()
@@ -262,6 +342,8 @@ struct AppCard<Content: View>: View {
     let caption: String?
     let systemImage: String
     let palette: AppPalette
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    var accessibilityContext: String? = nil
     var expanded: Binding<Bool>? = nil
     var menu: AnyView? = nil
     /// Optional hand-drawn mark (e.g. the DeepSeek whale) used instead of an SF Symbol.
@@ -289,12 +371,14 @@ struct AppCard<Content: View>: View {
                 Spacer(minLength: 6)
                 if let menu { menu }
                 if let expanded {
-                    Button { withAnimation(.snappy(duration: 0.22)) { expanded.wrappedValue.toggle() } } label: {
+                    Button { withAnimation(reduceMotion ? nil : .snappy(duration: 0.22)) { expanded.wrappedValue.toggle() } } label: {
                         Image(systemName: expanded.wrappedValue ? "chevron.up" : "chevron.down")
                             .font(.system(size: 13, weight: .semibold))
                             .foregroundStyle(palette.tertiary)
                             .frame(width: 28, height: 28)
-                    }.buttonStyle(.plain).accessibilityLabel(expanded.wrappedValue ? "折叠详情" : "展开详情")
+                            .frame(width: 44, height: 44).contentShape(Rectangle()).padding(-8)
+                    }.buttonStyle(.plain)
+                        .accessibilityLabel("\(accessibilityContext ?? [title, caption].compactMap { $0 }.joined(separator: " · "))，\(expanded.wrappedValue ? "折叠详情" : "展开详情")")
                 }
             }
             content
@@ -402,6 +486,7 @@ enum AppTab: String, CaseIterable, Identifiable {
 struct ContentView: View {
     @ObservedObject var model: UsageModel
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var scheme
     @State private var tab: AppTab = .status
     @State private var expanded: Set<String> = []
@@ -486,7 +571,7 @@ struct ContentView: View {
                         onSelectWidget: { model.selectWidget(id) },
                         onReauthorize: { connect = .service(.codex) },
                         onRemove: { Task { await model.logout(account: id) } },
-                        slotValue: slotValue(id)))))
+                        slotValue: slotValue(id), refreshError: model.refreshErrors[.codex(id)], busy: model.busy))))
         }
         for id in model.deepSeekIDs {
             cards.append((cardKey("deepseek", id), AnyView(DeepSeekAccountCard(snapshot: model.balances[id],
@@ -494,23 +579,24 @@ struct ContentView: View {
                                 onRefresh: { Task { _ = await model.refreshDeepSeek(id) } },
                                 onUpdateKey: { connect = .service(.deepseek) },
                                 onRemove: { Task { await model.removeDeepSeek(id) } },
-                                busy: model.busy))))
+                                busy: model.busy, refreshError: model.refreshErrors[.deepSeek(id)],
+                                accountContext: "DeepSeek · 账号 \((model.deepSeekIDs.firstIndex(of: id) ?? 0) + 1)"))))
         }
         if model.antigravityInstalled {
             cards.append((cardKey("antigravity", nil), AnyView(AntigravityCard(snapshot: model.antigravity,
                             expanded: expandedBinding("antigravity"), palette: palette,
-                            onRefresh: { Task { await model.refresh() } },
+                            onRefresh: { Task { await model.refresh(target: .antigravity) } },
                             onReauthorize: { connect = .service(.antigravity) },
                             onRemove: { Task { await model.removeAntigravity() } },
-                            busy: model.busy))))
+                            busy: model.busy, refreshError: model.refreshErrors[.antigravity]))))
         }
         if model.claudeInstalled {
             cards.append((cardKey("claude", ClaudeStore.id), AnyView(ClaudeAccountCard(snapshot: model.claudeSnapshot,
                             expanded: expandedBinding("claude"), palette: palette,
-                            onRefresh: { Task { await model.refresh() } },
+                            onRefresh: { Task { await model.refresh(target: .claude) } },
                             onReauthorize: { connect = .service(.claude) },
                             onRemove: { Task { await model.removeClaude() } },
-                            busy: model.busy))))
+                            busy: model.busy, refreshError: model.refreshErrors[.claude]))))
         }
         let wanted = CardOrder.sorted(cards.map(\.key), by: cardOrderModel.keys)
         return wanted.compactMap { key in cards.first { $0.key == key } }
@@ -522,7 +608,7 @@ struct ContentView: View {
         let target = index + offset
         guard keys.indices.contains(target), target != index else { return }
         keys.swapAt(index, target)
-        withAnimation(.snappy(duration: 0.2)) { cardOrderModel.keys = keys }
+        withAnimation(reduceMotion ? nil : .snappy(duration: 0.2)) { cardOrderModel.keys = keys }
         CardOrder.save(keys)
     }
     /// Moves one card to the bottom of the list.
@@ -531,7 +617,7 @@ struct ContentView: View {
         guard let index = keys.firstIndex(of: key), index != keys.count - 1 else { return }
         let item = keys.remove(at: index)
         keys.append(item)
-        withAnimation(.snappy(duration: 0.2)) { cardOrderModel.keys = keys }
+        withAnimation(reduceMotion ? nil : .snappy(duration: 0.2)) { cardOrderModel.keys = keys }
         CardOrder.save(keys)
     }
     var body: some View {
@@ -612,9 +698,10 @@ struct ContentView: View {
                 Spacer()
                 if tab == .status && model.signedIn {
                     Button(editMode == .active ? "完成" : "排序") {
-                        withAnimation { editMode = editMode == .active ? .inactive : .active }
+                        withAnimation(reduceMotion ? nil : .default) { editMode = editMode == .active ? .inactive : .active }
                     }
                     .scaledFont(15, weight: .semibold, relativeTo: .subheadline).foregroundStyle(palette.primary)
+                    .frame(minHeight: 44).contentShape(Rectangle()).padding(.vertical, -4)
                     .padding(.trailing, 4)
                 }
                 if tab == .status {
@@ -622,6 +709,7 @@ struct ContentView: View {
                         Image(systemName: "plus").font(.system(size: 15, weight: .semibold)).foregroundStyle(palette.primary)
                             .frame(width: 36, height: 36)
                             .background(palette.capsule, in: Circle())
+                            .frame(width: 44, height: 44).contentShape(Rectangle()).padding(-4)
                     }.buttonStyle(.plain).accessibilityLabel("连接账号")
                 }
                 if model.signedIn {
@@ -632,6 +720,7 @@ struct ContentView: View {
                     }
                     .frame(width: 36, height: 36)
                     .background(palette.capsule, in: Circle())
+                    .frame(width: 44, height: 44).contentShape(Rectangle()).padding(-4)
                 }.buttonStyle(.plain).disabled(model.spinning || !model.signedIn).accessibilityLabel("刷新额度")
                 }
             }
@@ -813,10 +902,33 @@ final class CardOrderModel: ObservableObject {
 /// sign-in panels moved into 连接账号.
 struct CardMenu<Items: View>: View {
     var palette: AppPalette
+    var accountContext = "账号"
     @ViewBuilder var items: Items
     var body: some View {
         Menu { items } label: {
             Image(systemName: "ellipsis").font(.system(size: 15, weight: .semibold)).foregroundStyle(palette.tertiary).frame(width: 28, height: 28)
+                .frame(width: 44, height: 44).contentShape(Rectangle()).padding(-8)
+        }
+        .accessibilityLabel("\(accountContext)，账号操作")
+    }
+}
+
+/// Invisible on success; a failed card keeps its old data and exposes the actual cached timestamp.
+struct CardRefreshFeedback: View {
+    let error: String?
+    let updatedAt: Date?
+    let palette: AppPalette
+    var busy = false
+    let onRetry: () -> Void
+    var body: some View {
+        if let error {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(error).font(.caption).foregroundStyle(palette.warning)
+                Text(updatedAt.map { "缓存更新 " + RelativeTime.stamp($0) } ?? "暂无缓存数据")
+                    .font(.caption).foregroundStyle(palette.secondary)
+                Button("重试此账号", action: onRetry).font(.caption).disabled(busy)
+                    .frame(minHeight: 44).contentShape(Rectangle())
+            }
         }
     }
 }
@@ -860,6 +972,8 @@ struct AccountCard: View {
     let onReauthorize: () -> Void
     let onRemove: () -> Void
     let slotValue: String
+    var refreshError: String? = nil
+    var busy = false
     var weekly: UsageWindow? { snapshot?.usage.rateLimit?.secondaryWindow }
     var session: UsageWindow? { snapshot?.usage.rateLimit?.primaryWindow }
     var credits: UsageCredits? { snapshot?.usage.credits }
@@ -873,8 +987,8 @@ struct AccountCard: View {
     }
     var body: some View {
         AppCard(title: title, caption: caption, systemImage: "chevron.left.forwardslash.chevron.right", palette: palette, expanded: $expanded,
-                menu: AnyView(CardMenu(palette: palette) {
-                    Button("刷新此账号", action: onRefresh)
+                menu: AnyView(CardMenu(palette: palette, accountContext: title + " · " + caption) {
+                    Button("刷新此账号", action: onRefresh).disabled(busy)
                     if canSelectWidget { Button("设为小组件左列账号", action: onSelectWidget) }
                     Button("添加账号 / 重新授权", action: onReauthorize)
                     Button("移除账号", role: .destructive, action: onRemove)
@@ -899,6 +1013,7 @@ struct AccountCard: View {
             } else {
                 SummaryLine(window: summary, brand: .codex, palette: palette)
             }
+            CardRefreshFeedback(error: refreshError, updatedAt: snapshot?.updatedAt, palette: palette, busy: busy, onRetry: onRefresh)
         }
     }
 }
@@ -913,11 +1028,13 @@ struct DeepSeekAccountCard: View {
     let onUpdateKey: () -> Void
     let onRemove: () -> Void
     let busy: Bool
+    var refreshError: String? = nil
+    var accountContext = "DeepSeek 账号"
     var info: DeepSeekBalance.BalanceInfo? { snapshot?.balance.balanceInfos.first }
     var updated: String { snapshot.map { RelativeTime.text($0.updatedAt) + ($0.isStale() ? " · 已过期" : "") } ?? "—" }
     var body: some View {
-        AppCard(title: "DeepSeek", caption: "API 平台余额 · 非聊天订阅", systemImage: "water.waves", palette: palette, expanded: $expanded,
-                menu: AnyView(CardMenu(palette: palette) {
+        AppCard(title: "DeepSeek", caption: "API 平台余额 · 非聊天订阅", systemImage: "water.waves", palette: palette, accessibilityContext: accountContext, expanded: $expanded,
+                menu: AnyView(CardMenu(palette: palette, accountContext: accountContext) {
                     Button("刷新此账号", action: onRefresh).disabled(busy)
                     Button("更新 Key", action: onUpdateKey)
                     Button("移除账号", role: .destructive, action: onRemove)
@@ -943,6 +1060,7 @@ struct DeepSeekAccountCard: View {
                         AppRow(label: "更新时间", value: updated, palette: palette)
                     }
                 }
+                CardRefreshFeedback(error: refreshError, updatedAt: snapshot?.updatedAt, palette: palette, busy: busy, onRetry: onRefresh)
             }
         }
     }
@@ -958,13 +1076,14 @@ struct AntigravityCard: View {
     let onReauthorize: () -> Void
     let onRemove: () -> Void
     let busy: Bool
+    var refreshError: String? = nil
     var summary: QuotaSummary.Window? {
         QuotaSummary.tightest((snapshot?.usage.quotas ?? []).map { .init(label: "模型额度", remaining: $0.remaining, reset: $0.reset) })
     }
     var body: some View {
         AppCard(title: "Antigravity", caption: "Google Antigravity 配额与额度",
                 systemImage: "sparkles", palette: palette, expanded: $expanded,
-                menu: AnyView(CardMenu(palette: palette) {
+                menu: AnyView(CardMenu(palette: palette, accountContext: "Antigravity") {
                     Button("刷新 Antigravity 用量", action: onRefresh).disabled(busy)
                     Button("重新授权", action: onReauthorize)
                     Button("移除 Antigravity 授权", role: .destructive, action: onRemove)
@@ -981,6 +1100,7 @@ struct AntigravityCard: View {
                 } else {
                     SummaryLine(window: summary, brand: .antigravity, palette: palette)
                 }
+                CardRefreshFeedback(error: refreshError, updatedAt: snapshot?.updatedAt, palette: palette, busy: busy, onRetry: onRefresh)
             }
         }
     }
@@ -988,10 +1108,13 @@ struct AntigravityCard: View {
 
 @main
 struct CodexUsageApp: App {
-    @StateObject private var model = UsageModel()
+    // XCTest hosts must not read real account stores, render storage-backed settings or auto-fetch.
+    static let isTesting = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+    @StateObject private var model = UsageModel(loadStoredAccounts: !isTesting)
     var body: some Scene {
         WindowGroup {
-            ContentView(model: model)
+            if Self.isTesting { Color.clear }
+            else { ContentView(model: model) }
         }
     }
 }

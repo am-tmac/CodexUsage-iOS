@@ -98,7 +98,7 @@ xcodebuild -project CodexUsage.xcodeproj -scheme CodexUsage \
 - 重签更换 Team/Bundle ID 可能导致旧钥匙串不可访问。此前 OAuth 已成功但保存失败的用户安装新版后需重新登录；保存失败提示明确说明授权完成、解锁/检查签名/重新登录。
 - 多账号：点「添加账号 / 重新授权」，在官方授权页退出/切换账号后授权第二个账号；不要继续使用浏览器里第一个账号的会话。App 使用明确的本机账号序号/标识，不声称未验证的邮箱身份。共享可用时点「用于组件」选择唯一的组件账号；本版不是每个 Widget 实例独立选择账号。
 - App 与 Widget 跟随系统深浅色，使用语义背景与前景色。iOS 26+ 登录/添加按钮使用原生 Liquid Glass（glassProminent），iOS 17–25 使用常规按钮和 material 回退。额度数据不覆盖玻璃，Widget 保留 Codex / 5h / 7d 的紧凑布局；没有调用不支持的 Widget 玻璃接口。没有额外外观设置开关。
-- 当前包：`Dist/CodexUsage-widget-build24-unsigned.ipa`，含 Widget，未签名，须自行重签安装；模拟器测试不能代替购买证书下的真机 OAuth、联网刷新和触摸验收。
+- 当前包：`Dist/CodexUsage-widget-build30-unsigned.ipa`，含 Widget，未签名，须自行重签安装；模拟器测试不能代替购买证书下的真机 OAuth、联网刷新和触摸验收。
 
 ### 2.0 / build 24（DeepSeek 刷新按钮贴黑卡右下角）
 
@@ -110,8 +110,16 @@ xcodebuild -project CodexUsage.xcodeproj -scheme CodexUsage \
 - build 23：Codex 的刷新控件移到组件整体右上角；DeepSeek 按钮曾上移过多，build 24 已修正。
 - build 22：把组件刷新授权的严格握手与经风险确认的手动授权分开；配置的 Keychain 组不代表真实 entitlement，只使用本机实测的精确组。Claude 登录移到状态页 ChatGPT 登录下方。
 - build 21：已授权时是组件内 AppIntent 真刷新；未授权时为不同外观的「打开 App」控件，不把打开 App 伪装成刷新。Claude 改为 OAuth 账号登录；删除旧的 WebKit 会话和手动 sessionKey 路径。
-- 旧版 IPA、打包脚本与验证日志均已清理。当前构建请用 `Scripts/package_widget_build29.py`（Release 构建需 `-xcconfig Configuration/Private.xcconfig`），目标输出目录为 `Build29Direct`；私有 ID 只从 `Private.xcconfig` 读取；重建前先运行静态契约、模拟器测试与 iphoneos Release 构建。详情见 `VERIFICATION-build25.md`。
+- 当前构建请用 `Scripts/package_widget_build30.py`（Release 构建需 `-xcconfig Configuration/Private.xcconfig`），目标输出目录为 `Build30Direct`；私有 ID 只从 `Private.xcconfig` 读取；重建前先运行静态契约、模拟器测试与 iphoneos Release 构建。详情见 `VERIFICATION-build30.md`。
 
 ## 当前版本
 
-当前源码对应 2.0 / build 24：DeepSeek 小号刷新控件放在黑卡右下角，金额行给点击区让位；Codex 控件仍在整体右上角。沿用 build 22 的授权/未授权不同控件与 Claude OAuth（状态页 ChatGPT 登录下面）。私有标识未签名包 `Dist/CodexUsage-widget-build24-unsigned.ipa`；真机重签后的控件位置、触摸刷新和真实 Claude 登录尚待验收。详见 `VERIFICATION-build24.md`。
+当前源码对应 **2.0 / build 30**。保留 build 29 的品牌色、Nowdex 风格连接账号流程和 DeepSeek 小组件立体卡包造型；修复以下刷新可靠性问题：
+
+- Claude 旧会话迁移不再误删当前 OAuth 用量缓存与退避记录。
+- Claude 用量 403 与 401 分开处理：访问被拒绝不误判为一定需要重新登录，也不盲目轮换令牌。
+- Claude 组件授权需由 App 更新时，显示明确的打开 App 操作，不把返回旧缓存记为刷新成功。
+- 各账号卡片独立显示安全错误、缓存更新时间及重试按钮；重试只请求对应账号，成功只清除对应错误。
+- 默认视觉保持紧凑，补齐大字号布局、44pt 点击区域、带账号上下文的朗读标签和减弱动态效果支持。
+
+核心测试 82 项、签名模拟器测试 76 项、静态契约 19+1+3 项通过，设备 Release 构建与未签名 IPA 校验通过。完整证据、SHA-256 和待真机验收项见 `VERIFICATION-build30.md`。未验证真实账号 OAuth/联网、手机签名下的 WidgetKit 或物理触摸效果。

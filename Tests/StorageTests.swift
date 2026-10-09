@@ -28,7 +28,194 @@ actor CancellingRotationTransport: HTTPTransport {
         return (Data(#"{"access_token":"unit-cancel-new","refresh_token":"unit-cancel-rotated","expires_in":3600}"#.utf8), 200)
     }
 }
+actor AppCodexRefreshProbe {
+    var succeeds = false
+    var calls: [String] = []
+    let snapshot: UsageSnapshot
+    init(snapshot: UsageSnapshot) { self.snapshot = snapshot }
+    func allowSuccess() { succeeds = true; calls = [] }
+    func fetch(_ id: String) throws -> UsageSnapshot {
+        calls.append(id)
+        guard succeeds && id == "first" else { throw ServiceError.loginRequired }
+        return snapshot
+    }
+}
 final class StorageTests: XCTestCase {
+    private var isolatedContainer: URL!
+    override func setUpWithError() throws {
+        isolatedContainer = FileManager.default.temporaryDirectory.appendingPathComponent("build30-app-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: isolatedContainer, withIntermediateDirectories: true)
+        SharedStorage.containerOverride = isolatedContainer
+    }
+    override func tearDownWithError() throws {
+        SharedStorage.containerOverride = nil
+        try FileManager.default.removeItem(at: isolatedContainer)
+    }
+
+    @MainActor func testAppRefreshKeepsFailuresOnTheirOwnCardsAndPreservesCache() async throws {
+        let old = UsageSnapshot(usage: try JSONDecoder().decode(UsageResponse.self, from: Data(#"{"rate_limit":null}"#.utf8)), updatedAt: Date(timeIntervalSince1970: 42))
+        let model = UsageModel(loadStoredAccounts: false, fetchers: AppRefreshFetchers(
+            codex: { id in throw id == "first" ? ServiceError.loginRequired : ServiceError.http(429) },
+            deepSeek: { _ in throw DeepSeekError.unauthorized },
+            antigravity: { throw AntigravityError.network },
+            claude: { throw ClaudeFailure.unauthorized }))
+        model.accounts = ["first", "second"]
+        model.snapshots = ["first": old, "second": old]
+        model.deepSeekIDs = ["wallet"]
+        model.antigravityInstalled = true
+        model.claudeInstalled = true
+        model.message = "管理提示"
+        await model.refresh()
+        XCTAssertNotNil(model.refreshErrors[.codex("first")])
+        XCTAssertNotNil(model.refreshErrors[.codex("second")])
+        XCTAssertNotNil(model.refreshErrors[.deepSeek("wallet")])
+        XCTAssertNotNil(model.refreshErrors[.antigravity])
+        XCTAssertNotNil(model.refreshErrors[.claude])
+        XCTAssertEqual(model.refreshErrors.count, 5)
+        XCTAssertNotEqual(model.refreshErrors[.codex("first")], model.refreshErrors[.codex("second")])
+        XCTAssertEqual(model.snapshots["first"], old)
+        XCTAssertEqual(model.snapshots["second"], old)
+        XCTAssertEqual(model.message, "管理提示", "Refresh errors must not replace login/management feedback")
+        XCTAssertFalse(model.busy)
+        XCTAssertFalse(model.spinning)
+    }
+
+    @MainActor func testAppSingleAccountSuccessClearsOnlyItsFailure() async throws {
+        let old = UsageSnapshot(usage: try JSONDecoder().decode(UsageResponse.self, from: Data(#"{"rate_limit":null}"#.utf8)), updatedAt: Date(timeIntervalSince1970: 42))
+        let fresh = UsageSnapshot(usage: old.usage, updatedAt: Date(timeIntervalSince1970: 100))
+        let probe = AppCodexRefreshProbe(snapshot: fresh)
+        let model = UsageModel(loadStoredAccounts: false, fetchers: AppRefreshFetchers(codex: { try await probe.fetch($0) }))
+        model.accounts = ["first", "second"]
+        model.snapshots = ["first": old, "second": old]
+        await model.refresh()
+        XCTAssertEqual(model.refreshErrors.count, 2)
+        await probe.allowSuccess()
+        await model.refresh(account: "first")
+        let calls = await probe.calls
+        XCTAssertEqual(calls, ["first"])
+        XCTAssertNil(model.refreshErrors[.codex("first")])
+        XCTAssertNotNil(model.refreshErrors[.codex("second")])
+        XCTAssertEqual(model.snapshots["first"], fresh)
+        XCTAssertEqual(model.snapshots["second"], old)
+    }
+
+    @MainActor func testAppProviderRetryFetchesOnlyTheSelectedCard() async throws {
+        let probe = AppCodexRefreshProbe(snapshot: UsageSnapshot(usage: try JSONDecoder().decode(UsageResponse.self, from: Data(#"{"rate_limit":null}"#.utf8)), updatedAt: Date()))
+        let model = UsageModel(loadStoredAccounts: false, fetchers: AppRefreshFetchers(
+            codex: { id in _ = try await probe.fetch("codex:" + id); throw ServiceError.loginRequired },
+            deepSeek: { id in _ = try await probe.fetch("deepseek:" + id); throw DeepSeekError.network },
+            antigravity: { _ = try await probe.fetch("antigravity"); throw AntigravityError.network },
+            claude: { _ = try await probe.fetch("claude"); throw ClaudeFailure.network }))
+        model.accounts = ["other"]
+        model.deepSeekIDs = ["wallet", "other-wallet"]
+        model.antigravityInstalled = true
+        model.claudeInstalled = true
+        await model.refresh(target: .claude)
+        var calls = await probe.calls
+        XCTAssertEqual(calls, ["claude"])
+        await probe.allowSuccess()
+        await model.refresh(target: .antigravity)
+        calls = await probe.calls
+        XCTAssertEqual(calls, ["antigravity"])
+        await probe.allowSuccess()
+        _ = await model.refreshDeepSeek("wallet")
+        calls = await probe.calls
+        XCTAssertEqual(calls, ["deepseek:wallet"])
+        XCTAssertNotNil(model.refreshErrors[.deepSeek("wallet")], "Status card must not discard a DeepSeek error")
+        XCTAssertTrue(model.deepSeekFailed.contains("wallet"))
+        XCTAssertNotNil(model.refreshErrors[.claude])
+        XCTAssertNotNil(model.refreshErrors[.antigravity])
+        XCTAssertNil(model.message)
+    }
+
+    @MainActor func testAppDeepSeekRetryWhileBusyReportsBusyNotStaleError() async throws {
+        let model = UsageModel(loadStoredAccounts: false, fetchers: AppRefreshFetchers(
+            deepSeek: { _ in XCTFail("a skipped refresh must not fetch"); throw DeepSeekError.network }))
+        model.deepSeekIDs = ["wallet"]
+        model.refreshErrors[.deepSeek("wallet")] = "旧错误"
+        model.busy = true
+        let error = await model.refreshDeepSeek("wallet")
+        XCTAssertEqual(error?.localizedDescription, "正在刷新，请稍后重试")
+        XCTAssertEqual(model.refreshErrors[.deepSeek("wallet")], "旧错误", "skip must not touch the card")
+    }
+
+    @MainActor func testAppPersistedAttemptsReloadKeepsIndependentFailureFlagsStable() throws {
+        let targets: [AppRefreshTarget] = [.codex("first"), .codex("second"), .deepSeek("wallet"), .claude, .antigravity]
+        let model = UsageModel(loadStoredAccounts: false)
+        for target in targets {
+            var attempt = WidgetRefreshAttempt()
+            attempt.fail(Date(timeIntervalSince1970: 50))
+            try attempt.save(target.accountID)
+        }
+        model.reloadRefreshAttempts(targets: targets)
+        XCTAssertEqual(model.refreshErrors.count, targets.count)
+        XCTAssertEqual(model.deepSeekFailed, ["wallet"])
+        var updates = 0
+        let subscription = model.objectWillChange.sink { updates += 1 }
+        defer { subscription.cancel() }
+        model.reloadRefreshAttempts(targets: targets)
+        XCTAssertEqual(updates, 0)
+        var success = WidgetRefreshAttempt.load("first")
+        success.succeed(Date(timeIntervalSince1970: 60))
+        try success.save("first")
+        model.reloadRefreshAttempts(targets: targets)
+        XCTAssertNil(model.refreshErrors[.codex("first")])
+        XCTAssertNotNil(model.refreshErrors[.codex("second")])
+        XCTAssertNotNil(model.refreshErrors[.claude])
+        XCTAssertEqual(model.deepSeekFailed, ["wallet"])
+    }
+
+    func testAppCardRefreshWiringAndFailurePresentation() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let app = try String(contentsOf: root.appendingPathComponent("App/CodexUsageApp.swift"))
+        let claude = try String(contentsOf: root.appendingPathComponent("App/ClaudePanel.swift"))
+        XCTAssertTrue(app.contains("model.refresh(target: .antigravity)"))
+        XCTAssertTrue(app.contains("model.refresh(target: .claude)"))
+        for marker in ["model.refreshErrors[.codex(id)]", "model.refreshErrors[.deepSeek(id)]", "model.refreshErrors[.antigravity]", "model.refreshErrors[.claude]"] {
+            XCTAssertTrue(app.contains(marker), marker)
+        }
+        for name in ["AccountCard", "DeepSeekAccountCard", "AntigravityCard"] {
+            let card = try XCTUnwrap(app.components(separatedBy: "struct " + name + ": View {").last)
+                .components(separatedBy: "\nstruct ").first!
+            XCTAssertTrue(card.contains("CardRefreshFeedback("), name + " must show error and cached update time even collapsed")
+        }
+        XCTAssertTrue(claude.components(separatedBy: "struct ClaudeAccountCard").last!.contains("CardRefreshFeedback("))
+    }
+
+    @MainActor func testAppReloadDoesNotEraseNewFailureWithOlderPersistedSuccess() async throws {
+        var attempt = WidgetRefreshAttempt()
+        attempt.succeed(Date(timeIntervalSince1970: 1))
+        try attempt.save("first")
+        let model = UsageModel(loadStoredAccounts: false, fetchers: AppRefreshFetchers(codex: { _ in throw ServiceError.busy }))
+        await model.refresh(account: "first")
+        let failure = model.refreshErrors[.codex("first")]
+        XCTAssertNotNil(failure)
+        model.reloadRefreshAttempts(targets: [.codex("first")])
+        XCTAssertEqual(model.refreshErrors[.codex("first")], failure, "An earlier success must not erase a later rejected retry")
+        attempt.succeed(Date().addingTimeInterval(1))
+        try attempt.save("first")
+        model.reloadRefreshAttempts(targets: [.codex("first")])
+        XCTAssertNil(model.refreshErrors[.codex("first")], "A newer extension success can clear an old App failure")
+    }
+
+    func testAppRefreshSafeErrorsDoNotExposeArbitraryDescriptions() {
+        let secretLikeError = NSError(domain: "unit", code: 1, userInfo: [NSLocalizedDescriptionKey: "Bearer unit-secret-only"])
+        let targets: [AppRefreshTarget] = [.codex("first"), .deepSeek("wallet"), .claude, .antigravity]
+        for target in targets {
+            XCTAssertFalse(AppRefreshError.text(secretLikeError, for: target).contains("unit-secret-only"))
+        }
+        XCTAssertFalse(AppRefreshError.text(ServiceError.storage("unit-secret-only"), for: .codex("first")).contains("unit-secret-only"))
+    }
+
+    func testAppTestHostDoesNotInitializeAccountStorage() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let app = try String(contentsOf: root.appendingPathComponent("App/CodexUsageApp.swift"))
+        let entry = app.components(separatedBy: "struct CodexUsageApp: App").last!
+        XCTAssertTrue(entry.contains("XCTestConfigurationFilePath"))
+        XCTAssertTrue(entry.contains("UsageModel(loadStoredAccounts: !"))
+        XCTAssertTrue(entry.contains("if Self.isTesting"))
+    }
+
     @MainActor func testUnchangedAccountReloadDoesNotPublishUIUpdates() {
         let model = UsageModel()
         model.reloadAccounts()

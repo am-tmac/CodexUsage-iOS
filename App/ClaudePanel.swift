@@ -347,6 +347,7 @@ struct ClaudeAccountCard: View {
     let onReauthorize: () -> Void
     let onRemove: () -> Void
     let busy: Bool
+    var refreshError: String? = nil
     var summary: QuotaSummary.Window? {
         QuotaSummary.tightest([.init(label: "5 小时", remaining: snapshot?.fiveHour?.remaining, reset: snapshot?.fiveHour?.reset),
                                .init(label: "7 天", remaining: snapshot?.sevenDay?.remaining, reset: snapshot?.sevenDay?.reset)])
@@ -354,7 +355,7 @@ struct ClaudeAccountCard: View {
     var body: some View {
         AppCard(title: "Claude", caption: "订阅额度 · 非官方 OAuth 兼容", systemImage: "sparkle", palette: palette,
                 expanded: $expanded,
-                menu: AnyView(CardMenu(palette: palette) {
+                menu: AnyView(CardMenu(palette: palette, accountContext: "Claude") {
                     Button("刷新 Claude 用量", action: onRefresh).disabled(busy)
                     Button("重新授权", action: onReauthorize)
                     Button("移除 Claude 授权", role: .destructive, action: onRemove)
@@ -370,6 +371,7 @@ struct ClaudeAccountCard: View {
             } else {
                 SummaryLine(window: summary, brand: .claude, palette: palette)
             }
+            CardRefreshFeedback(error: refreshError, updatedAt: snapshot?.updatedAt, palette: palette, busy: busy, onRetry: onRefresh)
         }
     }
 }

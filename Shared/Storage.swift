@@ -526,6 +526,10 @@ struct WidgetRefreshAttempt: Codable {
     // Optional fields decode build4 attempt files without discarding their backoff.
     var startedAt: Date?
     var completedAt: Date?
+    /// Optional so older records retain their original backoff when decoded.
+    /// Claude's extension can read access tokens but only the App may renew them.
+    var needsAppRefresh: Bool? = nil
+    var requiresAppRefresh: Bool { needsAppRefresh == true }
     static let progressLifetime: TimeInterval = 120
     var failed: Bool { failures > 0 }
     func isRefreshing(at now: Date) -> Bool {
@@ -544,8 +548,19 @@ struct WidgetRefreshAttempt: Codable {
         startedAt = nil
         completedAt = now
         failures = 0
+        needsAppRefresh = false
         nextAllowed = now.addingTimeInterval(Self.successCooldown)
     }
+    mutating func requireAppRefresh(_ now: Date) {
+        let previousBackoff = nextAllowed
+        fail(now)
+        needsAppRefresh = true
+        nextAllowed = max(previousBackoff, nextAllowed)
+    }
+    /// The App persisted a freshly rotated token. The widget can use it again even when the
+    /// usage request that followed failed, so only the renewal marker is cleared; failure
+    /// counting and backoff stay with `fail`.
+    mutating func authorizationRenewed() { needsAppRefresh = false }
     // Only call while owning the account lease: no live writer can be clobbered.
     mutating func recoverInterrupted(_ now: Date) {
         guard startedAt != nil else { return }

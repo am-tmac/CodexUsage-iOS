@@ -6,6 +6,22 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class WidgetRefreshContract(unittest.TestCase):
+    def test_build30_accessibility_preserves_compact_visuals(self):
+        # Visual sizes stay compact; the surrounding hit targets and text-size fallback expand.
+        app = (ROOT / 'App/CodexUsageApp.swift').read_text()
+        connect = (ROOT / 'App/ConnectViews.swift').read_text()
+        self.assertIn('accessibilityReduceMotion', app)
+        self.assertIn('dynamicTypeSize', connect)
+        self.assertIn('isAccessibilitySize', connect)
+        self.assertNotIn('withAnimation {', app)
+        self.assertIn('.frame(width: 44, height: 44)', app)
+        self.assertIn('.contentShape(Rectangle())', app)
+        menu = app.split('struct CardMenu', 1)[1].split('struct ', 1)[0]
+        self.assertIn('.accessibilityLabel(', menu)
+        # Approved provider palette and native system tab bar must survive.
+        self.assertIn('TabView(selection:', app)
+        self.assertIn('MeterColors(brand: brand', connect)
+
     def test_fifteen_minute_request(self):
         source = (ROOT / 'Widget/CodexUsageWidget.swift').read_text()
         self.assertIn('addingTimeInterval(900)', source)
@@ -44,7 +60,9 @@ class WidgetRefreshContract(unittest.TestCase):
         self.assertNotIn('.widgetURL(', widget)
         self.assertIn('仅缓存 · 组件无刷新授权，打开 App', views)
         # build 28: slots without refresh permission are filtered out before the concurrent fetch.
-        self.assertIn('RefreshTargets.unique([leftID, rightID]).filter { DashboardStore.canRefreshAnyProvider($0) }', views)
+        self.assertIn('RefreshTargets.unique([leftID, rightID]).filter {', views)
+        self.assertIn('DashboardStore.canRefreshAnyProvider($0) &&', views)
+        self.assertIn('($0 != ClaudeStore.id || !WidgetRefreshAttempt.load($0).requiresAppRefresh)', views)
     def test_widget_refresh_authorization_is_visible_in_the_app(self):
         # The point of the control is that the user can turn the real refresh on: the App must name
         # the missing step and refuse the switch instead of silently failing.
@@ -136,7 +154,7 @@ class WidgetRefreshContract(unittest.TestCase):
         # sessionKey/key path are DELETED, not hidden — no paste field, no cookie store, no
         # key-based fetch, no allowlist of challenge hosts. The provider is a real sign-in.
         for name in ['App/ClaudePanel.swift', 'Shared/Claude.swift', 'App/CodexUsageApp.swift',
-                     'Widget/CodexUsageWidget.swift', 'Scripts/package_widget_build29.py']:
+                     'Widget/CodexUsageWidget.swift', 'Scripts/package_widget_build30.py']:
             text = (ROOT / name).read_text()
             self.assertNotIn('sessionKey', text)
             self.assertNotIn('saveCookie', text)
@@ -179,7 +197,11 @@ class WidgetRefreshContract(unittest.TestCase):
         self.assertNotIn('Token', snapshot)
         # The pre-OAuth record is deleted, and the deletion is disclosed.
         self.assertIn('invalidateLegacyCredential', claude)
-        self.assertIn('SecItemDelete(legacy as CFDictionary)', claude)
+        self.assertIn('SecItemDelete(legacy)', claude)
+        self.assertIn('delete(legacy as CFDictionary)', claude)
+        migration = claude.split('static func invalidateLegacyCredential(', 1)[1].split('static func snapshotURL()', 1)[0]
+        for forbidden in ['removeItem', 'snapshotURL()', 'WidgetRefreshAttempt.url']:
+            self.assertNotIn(forbidden, migration)
         # The legacy service name survives only as the delete target — never as a live query.
         self.assertEqual(claude.count('CodexUsage.Claude.session.v1'), 1)
         legacy = claude.split('static let legacyService', 1)[0]
@@ -328,7 +350,12 @@ class WidgetRefreshContract(unittest.TestCase):
         self.assertIn('.overlay(alignment: .topTrailing)', widget)
         self.assertNotIn('if family == .systemMedium', widget)
         # The medium control carries both slots; the small control only the slot it displays.
-        self.assertIn('canRefresh: isMedium ? (entry.left.canRefresh || entry.right.canRefresh)', widget)
+        # Contract change (build 30 review): a Claude slot awaiting App renewal is filtered out of
+        # the tap by its own column/intent, but must not disable the other medium slot.
+        self.assertIn('var slotCanRefresh: Bool { isMedium ? (entry.left.canRefresh || entry.right.canRefresh) : entry.left.canRefresh }', widget)
+        self.assertIn('RefreshAffordance(canRefresh: slotCanRefresh,', widget)
+        self.assertIn('!slotCanRefresh && (entry.left.needsAppRefresh || (isMedium && entry.right.needsAppRefresh))', widget)
+        self.assertIn('canRefresh: !needsAppRefresh && (id.map', widget)
         self.assertIn('rightID: isMedium ? entry.right.id : nil', widget)
         self.assertIn('var hasConfiguredAccount: Bool { isMedium ? (entry.left.id != nil || entry.right.id != nil) : entry.left.id != nil }', widget)
         self.assertIn('if hasConfiguredAccount { refreshControl }', widget)
