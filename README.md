@@ -100,13 +100,9 @@ xcodebuild -project CodexUsage.xcodeproj -scheme CodexUsage \
 - App 与 Widget 跟随系统深浅色，使用语义背景与前景色。iOS 26+ 登录/添加按钮使用原生 Liquid Glass（glassProminent），iOS 17–25 使用常规按钮和 material 回退。额度数据不覆盖玻璃，Widget 保留 Codex / 5h / 7d 的紧凑布局；没有调用不支持的 Widget 玻璃接口。没有额外外观设置开关。
 - 当前包：`Dist/CodexUsage-widget-build30-unsigned.ipa`，含 Widget，未签名，须自行重签安装；模拟器测试不能代替购买证书下的真机 OAuth、联网刷新和触摸验收。
 
-### 2.0 / build 24（DeepSeek 刷新按钮贴黑卡右下角）
-
-- 纠正 build 23 上移过多的位置：DeepSeek 小号组件的 44pt 点击区距右边/底边各 4pt，图标中心约距两边 26pt；金额行预留 48pt，避免控件盖住金额。Codex 继续贴整体右上角，刷新/未授权行为及 Claude 登录不变。
-- 静态契约 17 项、模拟器 67 项通过；设备 Release 构建成功；`swift test` 40/41，仍是旧有锁文件失败。未签名包 `Dist/CodexUsage-widget-build24-unsigned.ipa`（1,161,847 字节），SHA-256 `f22b4903dd5f4392266c9d38fe7dc038430f919ebcf9e32357012c4532c19f86`。完整证据及真机待验项见 `VERIFICATION-build24.md`。
-
 ### 旧版变更摘要（已清理旧版产物）
 
+- build 24：DeepSeek 小号组件的刷新控件贴黑卡右下角（44pt 点击区距右/底各 4pt），金额行预留 48pt。
 - build 23：Codex 的刷新控件移到组件整体右上角；DeepSeek 按钮曾上移过多，build 24 已修正。
 - build 22：把组件刷新授权的严格握手与经风险确认的手动授权分开；配置的 Keychain 组不代表真实 entitlement，只使用本机实测的精确组。Claude 登录移到状态页 ChatGPT 登录下方。
 - build 21：已授权时是组件内 AppIntent 真刷新；未授权时为不同外观的「打开 App」控件，不把打开 App 伪装成刷新。Claude 改为 OAuth 账号登录；删除旧的 WebKit 会话和手动 sessionKey 路径。
