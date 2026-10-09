@@ -24,8 +24,9 @@
 ## 许可证与商标
 
 - 源代码使用 [MIT License](LICENSE)。
-- OpenAI、ChatGPT、Codex、Google、Antigravity、DeepSeek 等名称和商标归各自权利人所有。
-- 仓库不分发 OpenAI/ChatGPT 商标图片，也不分发来源不明的设计参考图。
+- OpenAI、ChatGPT、Codex、Claude、Anthropic、Google、Antigravity、DeepSeek 等名称和商标归各自权利人所有。
+- App 内的服务商 logo（`App/Assets.xcassets/Logo*`）来自 [@lobehub/icons](https://github.com/lobehub/icons)（MIT），仅用于标识对应服务；MIT 许可不包含商标授权，本项目与上述公司无关联、未获其认可。如需商用或分发，请自行确认商标使用规范，或替换为自己的图标。
+- 仓库不分发来源不明的设计参考图。
 - 所有账号接口都有变更、限流或禁止第三方客户端的风险；使用者应自行确认服务条款和授权范围。
 
 ## 功能与安全边界
